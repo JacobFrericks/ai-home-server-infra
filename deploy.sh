@@ -29,13 +29,19 @@ docker compose pull
 log "docker compose up -d"
 docker compose up -d
 
-# 3. Health check: Open WebUI answers and Ollama responds.
+# 3. Health check: Open WebUI, Ollama, Home Assistant, and (once cut over) Plex.
 log "health check"
 ok=1
 curl -fsS -o /dev/null "http://127.0.0.1:8080/health" \
   || curl -fsS -o /dev/null "http://127.0.0.1:8080/" \
   || ok=0
 docker compose exec -T ollama ollama list >/dev/null 2>&1 || ok=0
+curl -fsS -o /dev/null "http://127.0.0.1:8123/" || ok=0
+# Plex check is best-effort: the plex service stays undeployed until the
+# manual cutover runbook (README.md) has been run, so don't fail deploys
+# over it — just warn.
+curl -fsS -o /dev/null "http://127.0.0.1:32400/identity" \
+  || log "warning: Plex :32400 not responding (expected until cutover runbook is run)"
 
 if [ "$ok" -ne 1 ]; then
   log "HEALTH CHECK FAILED — inspect: docker compose ps / docker compose logs"

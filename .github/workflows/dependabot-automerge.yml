@@ -1,7 +1,8 @@
 name: Dependabot auto-merge
 
-# Policy: auto-merge Open WebUI patch/minor bumps once CI passes.
-# Ollama bumps and ALL major bumps are left open for manual review.
+# Policy: auto-merge any image patch/minor bump once CI passes, EXCEPT
+# Home Assistant (smart-home risk stays manual regardless of bump size).
+# ALL major bumps (including Ollama) also stay open for manual review.
 on: pull_request
 
 permissions:
@@ -17,9 +18,9 @@ jobs:
         id: meta
         uses: dependabot/fetch-metadata@v2
 
-      - name: Enable auto-merge for Open WebUI patch/minor
+      - name: Enable auto-merge for patch/minor (excluding Home Assistant)
         if: >-
-          contains(steps.meta.outputs.dependency-names, 'open-webui') &&
+          !contains(steps.meta.outputs.dependency-names, 'home-assistant') &&
           (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
            steps.meta.outputs.update-type == 'version-update:semver-minor')
         run: gh pr merge --auto --squash "$PR_URL"
