@@ -28,6 +28,11 @@ jobs:
           yamllint -d relaxed docker-compose.yml .github/
 
       - name: Scan for committed secrets
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Full-history scan via the gitleaks CLI. We don't use gitleaks-action's
+        # push-range diffing because it derefs <base>^ and fails on a repo's root
+        # commit (initial push). `gitleaks git .` scans all history deterministically.
+        run: |
+          VERSION=8.24.3
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /tmp gitleaks
+          /tmp/gitleaks git . --redact -v --exit-code 2 --config .gitleaks.toml

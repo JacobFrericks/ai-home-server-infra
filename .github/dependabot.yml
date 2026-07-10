@@ -1,8 +1,9 @@
 version: 2
 updates:
-  # Watches the pinned image: tags in docker-compose.yml (ollama, open-webui)
-  # and opens a PR per available bump.
-  - package-ecosystem: "docker"
+  # Watches the pinned image: tags in docker-compose.yml and opens a PR per
+  # available bump. NOTE: must be "docker-compose", not "docker" — the plain
+  # "docker" ecosystem only scans Dockerfiles/Kubernetes YAML, not compose files.
+  - package-ecosystem: "docker-compose"
     directory: "/"
     schedule:
       interval: "daily"

@@ -1,0 +1,15 @@
+# Gitleaks config for the CI secret scan (see .github/workflows/ci.yml).
+# Extends the default ruleset and allowlists known non-secret placeholders so
+# the full-history scan stays green.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documented placeholders and the CI dummy value (not real secrets)"
+regexes = [
+  '''ci-dummy-not-a-real-secret''',
+  '''REPLACE_WITH_OPENSSL_RAND_HEX_32''',
+]
+paths = [
+  '''\.env\.example$''',
+]
