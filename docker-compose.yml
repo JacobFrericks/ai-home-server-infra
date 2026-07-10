@@ -62,14 +62,14 @@ services:
       - /home/jacob/Documents/whisper:/data
     command: --model tiny-int8 --language en
 
-  # Plex (LinuxServer.io) — CUT OVER from the native .deb on 2026-07-10.
-  # The former native plexmediaserver.service is stopped/disabled/MASKED; this
-  # container now owns :32400. Config/DB live in /home/jacob/docker/plex/config
+  # Plex (LinuxServer.io) — CUT OVER from the native .deb on 2026-07-10; the
+  # native package was subsequently REMOVED (apt remove, NOT purge). This
+  # container owns :32400. Config/DB live in /home/jacob/docker/plex/config
   # (uid/gid 1000); the media libraries are bind-mounted below at their original
   # absolute paths so the DB resolves them with no re-matching.
-  # Rollback (reverses the cutover): `docker compose stop plex` then
-  # `sudo systemctl unmask --now plexmediaserver.service` — the native data under
-  # /var/lib/plexmediaserver was copied, not moved, so it is untouched.
+  # NOTE: the media dirs live inside /var/lib/plexmediaserver/Library, which is
+  # the old native package's data dir. NEVER `apt purge plexmediaserver` — its
+  # postrm rm -rf's that path only on purge; non-purge removal kept the media.
   plex:
     image: lscr.io/linuxserver/plex:1.43.2.10687-563d026ea-ls312
     container_name: plex

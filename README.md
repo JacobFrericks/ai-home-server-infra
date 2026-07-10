@@ -18,7 +18,7 @@ this repo itself. No secret ever lives in git.
 | homeassistant | `ghcr.io/home-assistant/home-assistant:2026.2.1` | host, privileged | binds `/run/dbus`, `~/Documents/homeassistant` |
 | piper | `rhasspy/wyoming-piper:2.2.2` | bridge, `:10200` | Wyoming TTS |
 | whisper | `rhasspy/wyoming-whisper:3.1.0` | bridge, `:10300` | Wyoming STT |
-| plex | `lscr.io/linuxserver/plex:1.43.2.10687-563d026ea-ls312` | host, `:32400` | **live** — cut over from the native `.deb` on 2026-07-10 (native service masked); config in `/home/jacob/docker/plex/config`, media bind-mounted from `/var/lib/plexmediaserver/Library`; GPU-shared with Ollama |
+| plex | `lscr.io/linuxserver/plex:1.43.2.10687-563d026ea-ls312` | host, `:32400` | **live** — cut over from the native `.deb` on 2026-07-10 (native package since removed); config in `/home/jacob/docker/plex/config`, media bind-mounted from `/var/lib/plexmediaserver/Library`; GPU-shared with Ollama |
 
 ## Layout
 
@@ -65,30 +65,28 @@ auto-merge" enabled and the CI check set as a required status check on `main`.
 
 ## Plex (containerized — cut over 2026-07-10)
 
-Plex was migrated from the native `.deb` to this container. The native
-`plexmediaserver.service` is stopped, disabled, and **masked**; the container
-owns `:32400`. Verified after cutover: server still claimed, libraries intact
-(Movies + TV Shows), GPU device present for hardware transcode.
+Plex was migrated from the native `.deb` to this container, and the native
+package has since been **removed** (`apt remove`, *not* purge). The container
+owns `:32400`. Verified: server still claimed, libraries intact (Movies + TV
+Shows), GPU device present for hardware transcode.
 
 - **Config/DB:** the native `Application Support/Plex Media Server` tree was
   copied into `/home/jacob/docker/plex/config` and re-owned to uid/gid 1000.
   The LSIO image nests it, so the data lives at
   `/config/Library/Application Support/Plex Media Server/`.
-- **Media:** bind-mounted at the original absolute paths
-  (`/var/lib/plexmediaserver/Library/{Movies,TVShows}`) so the DB resolves them
-  with no re-matching; server identity/claim and watch state were preserved.
+- **Media:** retained at its original absolute paths and bind-mounted there
+  (`/var/lib/plexmediaserver/Library/{Movies,TVShows}`, owned uid/gid 1000) so
+  the DB resolves them with no re-matching; identity/claim and watch state were
+  preserved.
 - **GPU:** the NVIDIA device is passed through for hardware transcode (shared
   with Ollama).
 
-**Rollback** — the native data under `/var/lib/plexmediaserver` was copied, not
-moved, so it is untouched:
+> **Never `purge` `plexmediaserver`.** The media lives *inside* the old native
+> data dir (`/var/lib/plexmediaserver/Library`), and the package's `postrm`
+> only `rm -rf`s `/var/lib/plexmediaserver` on `purge`. The native package was
+> therefore removed **non-purge**, leaving the media in place. Reinstalling and
+> purging later would delete it.
 
-```bash
-docker compose stop plex
-sudo systemctl unmask --now plexmediaserver.service
-curl -sf http://127.0.0.1:32400/identity   # native service back up
-```
-
-Once you're confident in the container, the native install can be removed to
-reclaim space (`sudo apt remove --purge plexmediaserver`) — optional and
-irreversible, so leave it until you're sure.
+The container is now the source of truth; to stop it use `docker compose stop
+plex`. Falling back to a native install would mean reinstalling the package and
+re-importing — not a simple `unmask` anymore.
