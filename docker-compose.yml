@@ -88,7 +88,11 @@ services:
       - VERSION=docker
     volumes:
       - /home/jacob/docker/plex/config:/config
-      - /media:/media
+      # Media libraries are bind-mounted at their ORIGINAL absolute paths so the
+      # copied Plex DB (which records these paths) resolves them unchanged — no
+      # library re-matching. Both dirs are owned uid/gid 1000 (jacob).
+      - /var/lib/plexmediaserver/Library/Movies:/var/lib/plexmediaserver/Library/Movies
+      - /var/lib/plexmediaserver/Library/TVShows:/var/lib/plexmediaserver/Library/TVShows
     deploy:
       resources:
         reservations:
