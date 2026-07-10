@@ -1,0 +1,5 @@
+# Real secrets live only on the server, never in git.
+.env
+
+# Deploy log written by deploy.sh / cron
+deploy.log

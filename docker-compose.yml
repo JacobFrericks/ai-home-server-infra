@@ -1,0 +1,37 @@
+services:
+  ollama:
+    image: ollama/ollama:0.30.10
+    container_name: ollama
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - OLLAMA_HOST=127.0.0.1:11434
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - /usr/share/ollama/.ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.9.6
+    container_name: open-webui
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
+      - ENABLE_SIGNUP=false
+      - OLLAMA_BASE_URL=http://127.0.0.1:11434
+    volumes:
+      - open-webui:/app/backend/data
+    depends_on:
+      - ollama
+
+volumes:
+  open-webui:
+    external: true

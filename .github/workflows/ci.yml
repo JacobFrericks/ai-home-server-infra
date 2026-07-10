@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate compose file
+        env:
+          # Any non-empty value satisfies interpolation; this is NOT a real secret.
+          WEBUI_SECRET_KEY: ci-dummy-not-a-real-secret
+        run: docker compose -f docker-compose.yml config -q
+
+      - name: Lint YAML
+        run: |
+          pipx install yamllint
+          yamllint -d relaxed docker-compose.yml .github/
+
+      - name: Scan for committed secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

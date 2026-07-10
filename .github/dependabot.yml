@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # Watches the pinned image: tags in docker-compose.yml (ollama, open-webui)
+  # and opens a PR per available bump.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore(deps)"
