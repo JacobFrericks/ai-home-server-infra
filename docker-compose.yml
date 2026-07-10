@@ -53,7 +53,7 @@ services:
     command: --voice en_US-hfc_female-medium
 
   whisper:
-    image: rhasspy/wyoming-whisper:3.1.0
+    image: rhasspy/wyoming-whisper:3.5.0
     container_name: whisper
     restart: unless-stopped
     ports:
