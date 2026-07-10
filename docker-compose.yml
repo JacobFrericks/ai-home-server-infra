@@ -62,23 +62,17 @@ services:
       - /home/jacob/Documents/whisper:/data
     command: --model tiny-int8 --language en
 
-  # Plex (LinuxServer.io) — DEFINED BUT NOT CUT OVER.
-  # The native plexmediaserver.service (v1.43.2) still owns :32400 and the
-  # ~1TB library under /var/lib/plexmediaserver. Migrating requires sudo
-  # (stopping/masking the native service, chown'ing data to uid/gid 1000) so
-  # it is NOT run automatically. See README.md "Plex cutover runbook" for the
-  # exact manual steps.
-  #
-  # `profiles: [plex-cutover]` is deliberate: it keeps this service OUT of
-  # a bare `docker compose up -d` (what deploy.sh's weekly cron runs, and
-  # what Phase 1/4 validation used) so it can never race the native service
-  # for :32400. It only starts via an explicit
-  # `docker compose --profile plex-cutover up -d plex`, run by hand once the
-  # runbook's sudo steps are done.
+  # Plex (LinuxServer.io) — CUT OVER from the native .deb on 2026-07-10.
+  # The former native plexmediaserver.service is stopped/disabled/MASKED; this
+  # container now owns :32400. Config/DB live in /home/jacob/docker/plex/config
+  # (uid/gid 1000); the media libraries are bind-mounted below at their original
+  # absolute paths so the DB resolves them with no re-matching.
+  # Rollback (reverses the cutover): `docker compose stop plex` then
+  # `sudo systemctl unmask --now plexmediaserver.service` — the native data under
+  # /var/lib/plexmediaserver was copied, not moved, so it is untouched.
   plex:
     image: lscr.io/linuxserver/plex:1.43.2.10687-563d026ea-ls312
     container_name: plex
-    profiles: ["plex-cutover"]
     network_mode: host
     restart: unless-stopped
     environment:
