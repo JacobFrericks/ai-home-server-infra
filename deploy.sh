@@ -29,6 +29,18 @@ docker compose pull
 log "docker compose up -d"
 docker compose up -d
 
+# 2b. Bring up the separate monitoring stack (Prometheus/Loki/Grafana), if its
+#     server-only secrets are in place. It's a distinct compose project so it
+#     can be recreated independently of the app stack above.
+if [ -f monitoring/.env ] && [ -f monitoring/prometheus/ha_token ]; then
+  log "docker compose -p monitoring pull"
+  docker compose -p monitoring -f monitoring/docker-compose.yml pull
+  log "docker compose -p monitoring up -d"
+  docker compose -p monitoring -f monitoring/docker-compose.yml up -d
+else
+  log "monitoring/.env or monitoring/prometheus/ha_token missing — skipping monitoring stack (see monitoring/README.md)"
+fi
+
 # 3. Health check: Open WebUI, Ollama, Home Assistant, and (once cut over) Plex.
 log "health check"
 ok=1
@@ -42,6 +54,10 @@ curl -fsS -o /dev/null "http://127.0.0.1:8123/" || ok=0
 # over it — just warn.
 curl -fsS -o /dev/null "http://127.0.0.1:32400/identity" \
   || log "warning: Plex :32400 not responding (expected until cutover runbook is run)"
+# Grafana check is best-effort too: the monitoring stack only comes up once
+# its server-only secrets exist (see step 2b above).
+curl -fsS -o /dev/null "http://127.0.0.1:3000/api/health" \
+  || log "warning: Grafana :3000 not responding (monitoring stack may not be deployed yet)"
 
 if [ "$ok" -ne 1 ]; then
   log "HEALTH CHECK FAILED — inspect: docker compose ps / docker compose logs"

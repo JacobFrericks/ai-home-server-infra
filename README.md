@@ -30,6 +30,9 @@ deploy.sh            # run on the server: git pull -> compose pull -> up -d -> h
   dependabot.yml               # opens PRs to bump the pinned image tags
   workflows/ci.yml             # validate compose + yamllint + gitleaks on every PR/push
   workflows/dependabot-automerge.yml  # auto-merge patch/minor bumps, Home Assistant excluded
+monitoring/
+  docker-compose.yml           # SEPARATE compose project ("monitoring"): Prometheus + Loki
+                                #   + Grafana + exporters. See monitoring/README.md.
 ```
 
 ## Secrets
@@ -55,6 +58,14 @@ green, **except Home Assistant** (smart-home risk stays manual regardless of
 bump size). **All major bumps — including Ollama — stay open for manual
 review** (GPU/inference risk). For auto-merge to fire, the repo needs "Allow
 auto-merge" enabled and the CI check set as a required status check on `main`.
+
+## Observability
+
+A separate Grafana/Prometheus/Loki stack (`monitoring/`, project
+`monitoring`) provides host + GPU + per-container dashboards, centralized
+container logs, and alert rules — LAN-reachable only at `:3000` (Grafana);
+everything else stays off the LAN. See `monitoring/README.md` for the full
+service list, dashboards, alert rules, and secrets setup.
 
 ## Not automated (by design)
 

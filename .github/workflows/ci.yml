@@ -22,10 +22,20 @@ jobs:
           WEBUI_SECRET_KEY: ci-dummy-not-a-real-secret
         run: docker compose -f docker-compose.yml config -q
 
+      - name: Validate monitoring compose file
+        env:
+          # Dummy values for interpolation only — the monitoring stack's real
+          # secrets (monitoring/.env, monitoring/prometheus/ha_token) are
+          # server-only and git-ignored; config validation doesn't need them
+          # to exist on disk.
+          GRAFANA_ADMIN_PASSWORD: ci-dummy-not-a-real-secret
+          PLEX_TOKEN: ci-dummy-not-a-real-secret
+        run: docker compose -f monitoring/docker-compose.yml config -q
+
       - name: Lint YAML
         run: |
           pipx install yamllint
-          yamllint -d relaxed docker-compose.yml .github/
+          yamllint -d relaxed docker-compose.yml monitoring/ .github/
 
       - name: Scan for committed secrets
         # Full-history scan via the gitleaks CLI. We don't use gitleaks-action's

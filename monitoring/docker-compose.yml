@@ -1,0 +1,174 @@
+name: monitoring
+
+# Local observability stack (Prometheus + Loki + Grafana) for the home server.
+# Deliberately a SEPARATE compose project from the app stack (../docker-compose.yml,
+# project "ai-stack") so the two can be pulled/restarted independently.
+#
+# Exposure policy: ONLY Grafana publishes a host port (3000, LAN-reachable).
+# Every other service (Prometheus, Loki, Alloy, exporters) stays unpublished on
+# the "monitoring" bridge network — reachable from Grafana/Prometheus by
+# service name only, never from the LAN.
+#
+# Prometheus/blackbox/the Plex exporter reach the app stack's HOST-NETWORKED
+# services (ollama, open-webui, homeassistant, plex, piper, whisper all bind
+# the host directly) via host.docker.internal, resolved through
+# extra_hosts: host-gateway.
+
+services:
+  grafana:
+    image: grafana/grafana-oss:13.0.2
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - monitoring
+    depends_on:
+      - prometheus
+      - loki
+
+  prometheus:
+    image: prom/prometheus:v3.13.1
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      # ha_token is server-only, git-ignored (see monitoring/README.md).
+      - ./prometheus/ha_token:/etc/prometheus/ha_token:ro
+      - prometheus-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - monitoring
+
+  loki:
+    image: grafana/loki:3.7.3
+    container_name: loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki-data:/loki
+    networks:
+      - monitoring
+
+  alloy:
+    image: grafana/alloy:v1.17.1
+    container_name: alloy
+    restart: unless-stopped
+    command:
+      - run
+      - --server.http.listen-addr=127.0.0.1:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - alloy-data:/var/lib/alloy/data
+    networks:
+      - monitoring
+    depends_on:
+      - loki
+
+  node-exporter:
+    image: prom/node-exporter:v1.11.1
+    container_name: node-exporter
+    restart: unless-stopped
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/host/root
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro
+    networks:
+      - monitoring
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.55.1
+    container_name: cadvisor
+    restart: unless-stopped
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    networks:
+      - monitoring
+
+  nvidia-gpu-exporter:
+    image: utkuozdemir/nvidia_gpu_exporter:1.10.0
+    container_name: nvidia-gpu-exporter
+    restart: unless-stopped
+    # Shares the host PID namespace so nvidia-smi's per-process metrics
+    # (nvidia_smi_compute_app_info / _used_memory_bytes) resolve real process
+    # names instead of meaningless in-container PIDs — needed for the
+    # Ollama-vs-Plex VRAM split on the "shared VRAM" dashboard.
+    pid: host
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - monitoring
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.28.0
+    container_name: blackbox-exporter
+    restart: unless-stopped
+    volumes:
+      - ./blackbox/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - monitoring
+
+  # Best-effort: Plex session/library/transcode metrics. See README.md
+  # "Plex exporter" section for why this specific image was chosen.
+  plex-exporter:
+    image: ajalewis/plex-media-server-exporter:v3.0.0
+    container_name: plex-exporter
+    restart: unless-stopped
+    environment:
+      - PLEX_SERVER=http://host.docker.internal:32400
+      - PLEX_TOKEN=${PLEX_TOKEN}
+      - PORT=9922
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - monitoring
+
+networks:
+  monitoring:
+    name: monitoring
+    driver: bridge
+
+volumes:
+  grafana-data:
+  prometheus-data:
+  loki-data:
+  alloy-data:
