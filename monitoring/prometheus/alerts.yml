@@ -1,0 +1,75 @@
+groups:
+  - name: host
+    rules:
+      - alert: HostDiskSpaceLow
+        expr: >-
+          (1 - (node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"}
+            / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"})) * 100 > 85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Root filesystem >85% full ({{ $value | printf \"%.1f\" }}%)"
+          description: "{{ $labels.instance }} root filesystem usage has been above 85% for 10m."
+
+      - alert: HostSustainedSwapUsage
+        expr: >-
+          node_memory_SwapTotal_bytes > 0
+          and
+          ((node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes) / node_memory_SwapTotal_bytes) * 100 > 20
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sustained swap usage on {{ $labels.instance }} ({{ $value | printf \"%.1f\" }}%)"
+          description: "Swap usage has been above 20% for 15m — check for memory pressure."
+
+  - name: gpu
+    rules:
+      - alert: GpuVramNearCapacity
+        expr: (nvidia_smi_memory_used_bytes / nvidia_smi_memory_total_bytes) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU VRAM near capacity on {{ $labels.instance }} ({{ $value | printf \"%.1f\" }}%)"
+          description: "Combined VRAM usage (Ollama + Plex NVENC share one 24GB 3090) has been above 90% for 5m."
+
+      - alert: GpuHighTemperature
+        expr: nvidia_smi_temperature_gpu > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU running hot on {{ $labels.instance }} ({{ $value }}C)"
+          description: "GPU temperature has been above 80C for 5m."
+
+  - name: targets
+    rules:
+      - alert: TargetDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Scrape target down: {{ $labels.job }} ({{ $labels.instance }})"
+          description: "Prometheus has not been able to scrape {{ $labels.job }}/{{ $labels.instance }} for 5m."
+
+      - alert: BlackboxProbeFailing
+        expr: probe_success == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Blackbox probe failing for {{ $labels.instance }}"
+          description: "The blackbox probe against {{ $labels.instance }} has failed for 5m."
+
+  - name: containers
+    rules:
+      - alert: ContainerRestartLoop
+        expr: changes(container_start_time_seconds{name!=""}[15m]) > 2
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.name }} is restart-looping"
+          description: "{{ $labels.name }} has restarted more than twice in the last 15 minutes."

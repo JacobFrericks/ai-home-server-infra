@@ -13,3 +13,16 @@ updates:
       - "docker"
     commit-message:
       prefix: "chore(deps)"
+
+  # Same mechanism for the separate monitoring stack's pinned image tags.
+  - package-ecosystem: "docker-compose"
+    directory: "/monitoring"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "docker"
+      - "monitoring"
+    commit-message:
+      prefix: "chore(deps)"

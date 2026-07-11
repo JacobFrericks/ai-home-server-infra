@@ -1,5 +1,10 @@
 # Real secrets live only on the server, never in git.
 .env
+monitoring/.env
+
+# Home Assistant long-lived access token for the Prometheus scrape job.
+# Server-only, chmod 600. See monitoring/README.md for rotation steps.
+monitoring/prometheus/ha_token
 
 # Deploy log written by deploy.sh / cron
 deploy.log
