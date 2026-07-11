@@ -27,13 +27,11 @@ services:
       - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
       - ENABLE_SIGNUP=false
       - OLLAMA_BASE_URL=http://127.0.0.1:11434
-      # Web search via the local SearXNG instance below. SearXNG is published on
-      # 127.0.0.1:8888; open-webui is host-networked so loopback reaches it.
-      - ENABLE_WEB_SEARCH=true
-      - WEB_SEARCH_ENGINE=searxng
-      - SEARXNG_QUERY_URL=http://127.0.0.1:8888/search?q=<query>
-      - WEB_SEARCH_RESULT_COUNT=4
-      - WEB_SEARCH_CONCURRENT_REQUESTS=10
+      # Web search is via the searxng-mcp MCP server (see README "Web search via
+      # MCP"), NOT Open WebUI's native web search — that is disabled at runtime
+      # (web.search.enable=false in the open-webui DB). Set here so a fresh
+      # install also starts with the native toggle off.
+      - ENABLE_WEB_SEARCH=false
     volumes:
       - open-webui:/app/backend/data
     depends_on:
