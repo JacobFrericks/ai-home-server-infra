@@ -16,6 +16,7 @@ this repo itself. No secret ever lives in git.
 | ollama | `ollama/ollama:0.31.2` | host, `127.0.0.1:11434` only | GPU reservation (RTX 3090) |
 | open-webui | `ghcr.io/open-webui/open-webui:v0.10.2` | host | uses `WEBUI_SECRET_KEY`; web search via SearXNG (`ENABLE_WEB_SEARCH`) |
 | searxng | `searxng/searxng:2026.7.11-62a1ab7ed` | bridge, `127.0.0.1:8888` only | private metasearch backing Open WebUI's web search; loopback-only, no API keys |
+| searxng-mcp | `isokoliuk/mcp-searxng:1.11.0` | host, `127.0.0.1:9200` only | MCP server wrapping SearXNG as a tool for the Home Assistant voice agent; streamable-HTTP at `/mcp`, loopback-only |
 | homeassistant | `ghcr.io/home-assistant/home-assistant:2026.7.1` | host, privileged | binds `/run/dbus`, `~/Documents/homeassistant` |
 | piper | `rhasspy/wyoming-piper:2.2.2` | bridge, `:10200` | Wyoming TTS |
 | whisper | `rhasspy/wyoming-whisper:3.5.0` | bridge, `:10300` | Wyoming STT |
@@ -60,6 +61,32 @@ aggregator account. Open WebUI is wired to it via `ENABLE_WEB_SEARCH=true`,
   `cp searxng/settings.yml.example searxng/settings.yml && sed -i "s/ultrasecretkey/$(openssl rand -hex 32)/" searxng/settings.yml`.
   The searxng image only auto-generates a secret when `settings.yml` is absent;
   since we bind-mount our own, the secret must be set in it.
+
+## Voice web search (Home Assistant Assist)
+
+The Home Assistant voice assistant (Ollama / `gemma4:31b`) can also search the
+web, via the `searxng-mcp` service — an MCP server that exposes the same SearXNG
+instance as a set of tools (`searxng_web_search`, `web_url_read`, …). It runs in
+streamable-HTTP mode bound to `127.0.0.1:9200` (loopback only, no ufw rule) and
+reaches SearXNG at `127.0.0.1:8888`.
+
+Wiring on the HA side is **runtime state in HA's `.storage`, not tracked in this
+repo** — record of how it was set up:
+
+1. **MCP Client integration** → points at `http://127.0.0.1:9200/mcp`. Add it in
+   the HA UI (Settings → Devices & Services → Add Integration → *Model Context
+   Protocol*), or as a `mcp` config entry in `.storage/core.config_entries`
+   (`data.url`). HA's MCP client tries streamable-HTTP first, then falls back to
+   SSE, so the `/mcp` endpoint works directly (no SSE proxy needed).
+2. **Grant the agent access.** MCP registers its own LLM API with id
+   `mcp-<config_entry_id>` — it is **not** part of the `assist` API. The Ollama
+   *conversation* subentry's `llm_hass_api` must therefore include **both**
+   `assist` and that `mcp-<entry_id>` id, else the agent never sees the tools.
+3. gemma4:31b is tool-capable and will call `searxng_web_search`. It tends to
+   answer from memory unless nudged, so the conversation agent's system prompt
+   was extended with a line telling it to use web search for current / external
+   / uncertain questions — with that, it searches on its own (verified: an
+   un-prompted "who won the most recent F1 race?" triggered a live search).
 
 ## Secrets
 

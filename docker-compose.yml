@@ -57,6 +57,25 @@ services:
     environment:
       - SEARXNG_BASE_URL=http://127.0.0.1:8888/
 
+  # Web-search MCP server backing the Home Assistant voice Assist agent. Wraps
+  # the SearXNG instance above as an MCP tool. Runs in streamable-HTTP mode
+  # (HA's MCP Client integration supports streamable-HTTP first, SSE fallback)
+  # and binds LOOPBACK ONLY (MCP_HTTP_HOST=127.0.0.1) — never on the LAN, no ufw
+  # rule. host networking lets it both reach SearXNG at 127.0.0.1:8888 and be
+  # reachable by the host-networked homeassistant container at 127.0.0.1:9200.
+  # HA connects to it at http://127.0.0.1:9200/mcp (see README "Voice web search").
+  searxng-mcp:
+    image: isokoliuk/mcp-searxng:1.11.0
+    container_name: searxng-mcp
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - SEARXNG_URL=http://127.0.0.1:8888
+      - MCP_HTTP_HOST=127.0.0.1
+      - MCP_HTTP_PORT=9200
+    depends_on:
+      - searxng
+
   homeassistant:
     image: ghcr.io/home-assistant/home-assistant:2026.7.1
     container_name: homeassistant
