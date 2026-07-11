@@ -1,0 +1,12 @@
+apiVersion: 1
+
+# Root notification policy: route everything to the HA mobile contact point.
+# NOTE: provisioning a policy replaces Grafana's default root policy for this org.
+policies:
+  - orgId: 1
+    receiver: ha-mobile
+    group_by:
+      - alertname
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h

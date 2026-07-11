@@ -1,0 +1,16 @@
+apiVersion: 1
+
+# Sends firing/resolved alerts to Home Assistant, which relays them as a native
+# push notification to the HA Companion app (Pixel 9 Pro). HA is host-networked on
+# :8123; the Grafana container reaches it over the LAN IP (host.docker.internal did
+# not resolve from this container during setup).
+contactPoints:
+  - orgId: 1
+    name: ha-mobile
+    receivers:
+      - uid: ha_mobile_webhook
+        type: webhook
+        disableResolveMessage: false
+        settings:
+          url: http://192.168.86.63:8123/api/webhook/grafana_alerts
+          httpMethod: POST

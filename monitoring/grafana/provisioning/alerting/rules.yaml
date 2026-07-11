@@ -1,0 +1,164 @@
+apiVersion: 1
+
+# Grafana-managed alert rules — the "critical few". Each rule runs an instant
+# Prometheus query (refId A) and a threshold expression (refId C) as its condition.
+# PromQL and thresholds mirror monitoring/prometheus/alerts.yml.
+groups:
+  - orgId: 1
+    name: home-server-critical
+    folder: Home Server
+    interval: 1m
+    rules:
+      # Root filesystem > 85% full (for 10m)
+      - uid: hs-disk-almost-full
+        title: DiskAlmostFull
+        condition: C
+        for: 10m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: critical
+        annotations:
+          summary: "Root filesystem over 85% full on {{ $labels.instance }}"
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              expr: >-
+                (1 - (node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"}
+                / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"})) * 100
+          - refId: C
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [85]
+
+      # GPU temperature > 80C (for 5m)
+      - uid: hs-gpu-temp-high
+        title: GPUTempHigh
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: critical
+        annotations:
+          summary: "GPU running hot (>80C) on {{ $labels.instance }}"
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              expr: nvidia_smi_temperature_gpu
+          - refId: C
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [80]
+
+      # Any scrape target down: up == 0 (for 5m)
+      - uid: hs-target-down
+        title: TargetDown
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: critical
+        annotations:
+          summary: "Scrape target down: {{ $labels.job }} ({{ $labels.instance }})"
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              expr: up
+          - refId: C
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [1]
+
+      # Container restarting more than twice in 15m
+      - uid: hs-container-restart-loop
+        title: ContainerRestartLoop
+        condition: C
+        for: 0m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: critical
+        annotations:
+          summary: "Container {{ $labels.name }} is restart-looping"
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: prometheus
+            model:
+              refId: A
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              expr: changes(container_start_time_seconds{name!=""}[15m])
+          - refId: C
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [2]
