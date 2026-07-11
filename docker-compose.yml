@@ -27,10 +27,35 @@ services:
       - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
       - ENABLE_SIGNUP=false
       - OLLAMA_BASE_URL=http://127.0.0.1:11434
+      # Web search via the local SearXNG instance below. SearXNG is published on
+      # 127.0.0.1:8888; open-webui is host-networked so loopback reaches it.
+      - ENABLE_WEB_SEARCH=true
+      - WEB_SEARCH_ENGINE=searxng
+      - SEARXNG_QUERY_URL=http://127.0.0.1:8888/search?q=<query>
+      - WEB_SEARCH_RESULT_COUNT=4
+      - WEB_SEARCH_CONCURRENT_REQUESTS=10
     volumes:
       - open-webui:/app/backend/data
     depends_on:
       - ollama
+
+  # Self-hosted SearXNG metasearch — gives the local LLMs web access with no API
+  # keys and no queries leaving to a third-party aggregator. Published on LOOPBACK
+  # only (127.0.0.1:8888) so it never touches the LAN; only outbound traffic is
+  # SearXNG -> public search engines. Config lives in ./searxng: settings.yml is
+  # git-ignored (holds a real secret_key, server-only) and generated from
+  # settings.yml.example. The JSON output format MUST be enabled in settings.yml
+  # or open-webui gets HTTP 403 from the search API.
+  searxng:
+    image: searxng/searxng:2026.7.11-62a1ab7ed
+    container_name: searxng
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8888:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://127.0.0.1:8888/
 
   homeassistant:
     image: ghcr.io/home-assistant/home-assistant:2026.7.1

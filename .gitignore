@@ -8,3 +8,7 @@ monitoring/prometheus/ha_token
 
 # Deploy log written by deploy.sh / cron
 deploy.log
+
+# SearXNG real settings (holds secret_key). Server-only; the tracked
+# template is searxng/settings.yml.example.
+searxng/settings.yml

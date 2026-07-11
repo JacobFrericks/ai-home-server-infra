@@ -1,0 +1,31 @@
+# SearXNG settings for the ai-stack local web-search backend.
+#
+# The REAL file is searxng/settings.yml (git-ignored, server-only) — copy this
+# template to it and replace the secret_key with a real value:
+#
+#   cd /home/jacob/docker/ai-stack
+#   cp searxng/settings.yml.example searxng/settings.yml
+#   sed -i "s/ultrasecretkey/$(openssl rand -hex 32)/" searxng/settings.yml
+#
+# settings.yml is git-ignored so the secret never lands in git AND so deploy.sh's
+# `git reset --hard origin/main` leaves it untouched (ignored files are not reset).
+# The searxng image only auto-generates a secret when settings.yml is ABSENT; when
+# we bind-mount our own it is used as-is, so the secret must be set here.
+#
+# see https://docs.searxng.org/admin/settings/settings.html
+use_default_settings: true
+
+server:
+  # Change this in the real settings.yml (see header). Used for session/CSRF
+  # signing; for our loopback JSON-API use it is low-risk but should still be set.
+  secret_key: "ultrasecretkey"
+  # No public exposure (loopback only) and single local user -> no rate limiter,
+  # and no redis/valkey needed for it.
+  limiter: false
+  image_proxy: true
+
+search:
+  # JSON is REQUIRED for Open WebUI's search API; without it SearXNG returns 403.
+  formats:
+    - html
+    - json

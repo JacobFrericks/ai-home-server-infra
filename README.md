@@ -1,10 +1,10 @@
 # ai-home-server-infra
 
 Source of truth for the home server's containerized services — **Ollama,
-Open WebUI, Home Assistant, Wyoming Piper (TTS), Wyoming Whisper (STT)**, and
-(pending manual cutover) **Plex** — managed with a single `docker compose`
-file, image bumps automated via Dependabot, and applied to the server on a
-weekly self-pulling deploy loop.
+Open WebUI, SearXNG (web search), Home Assistant, Wyoming Piper (TTS), Wyoming
+Whisper (STT)**, and **Plex** — managed with a single `docker compose` file,
+image bumps automated via Dependabot, and applied to the server on a weekly
+self-pulling deploy loop.
 
 The server is LAN-only behind NAT and never accepts an inbound push — it pulls
 this repo itself. No secret ever lives in git.
@@ -13,11 +13,12 @@ this repo itself. No secret ever lives in git.
 
 | Service | Image | Network | Notes |
 |---|---|---|---|
-| ollama | `ollama/ollama:0.30.10` | host, `127.0.0.1:11434` only | GPU reservation (RTX 3090) |
-| open-webui | `ghcr.io/open-webui/open-webui:v0.9.6` | host | uses `WEBUI_SECRET_KEY` |
-| homeassistant | `ghcr.io/home-assistant/home-assistant:2026.2.1` | host, privileged | binds `/run/dbus`, `~/Documents/homeassistant` |
+| ollama | `ollama/ollama:0.31.2` | host, `127.0.0.1:11434` only | GPU reservation (RTX 3090) |
+| open-webui | `ghcr.io/open-webui/open-webui:v0.10.2` | host | uses `WEBUI_SECRET_KEY`; web search via SearXNG (`ENABLE_WEB_SEARCH`) |
+| searxng | `searxng/searxng:2026.7.11-62a1ab7ed` | bridge, `127.0.0.1:8888` only | private metasearch backing Open WebUI's web search; loopback-only, no API keys |
+| homeassistant | `ghcr.io/home-assistant/home-assistant:2026.7.1` | host, privileged | binds `/run/dbus`, `~/Documents/homeassistant` |
 | piper | `rhasspy/wyoming-piper:2.2.2` | bridge, `:10200` | Wyoming TTS |
-| whisper | `rhasspy/wyoming-whisper:3.1.0` | bridge, `:10300` | Wyoming STT |
+| whisper | `rhasspy/wyoming-whisper:3.5.0` | bridge, `:10300` | Wyoming STT |
 | plex | `lscr.io/linuxserver/plex:1.43.2.10687-563d026ea-ls312` | host, `:32400` | **live** — cut over from the native `.deb` on 2026-07-10 (native package since removed); config in `/home/jacob/docker/plex/config`, media bind-mounted from `/var/lib/plexmediaserver/Library`; GPU-shared with Ollama |
 
 ## Layout
@@ -25,6 +26,8 @@ this repo itself. No secret ever lives in git.
 ```
 docker-compose.yml   # the stack (pinned images, host networking, GPU reservation)
 .env.example         # placeholder; real .env lives only on the server (git-ignored)
+searxng/
+  settings.yml.example  # tracked template; real searxng/settings.yml is git-ignored (server-only)
 deploy.sh            # run on the server: git pull -> compose pull -> up -d -> health check
 .github/
   dependabot.yml               # opens PRs to bump the pinned image tags
@@ -35,11 +38,36 @@ monitoring/
                                 #   + Grafana + exporters. See monitoring/README.md.
 ```
 
+## Web search (SearXNG)
+
+The local LLMs get internet access through a self-hosted **SearXNG** metasearch
+instance — no third-party API keys, and queries are not sent to a search
+aggregator account. Open WebUI is wired to it via `ENABLE_WEB_SEARCH=true`,
+`WEB_SEARCH_ENGINE=searxng`, and `SEARXNG_QUERY_URL` (all set on the
+`open-webui` service). To use it, toggle **Web Search** in a chat.
+
+- **Loopback only:** SearXNG publishes `127.0.0.1:8888` — never on the LAN, so
+  no ufw rule is needed (consistent with the stack's "only Grafana on the LAN"
+  posture). Its only outbound traffic is to public search engines.
+- **JSON format is required:** `searxng/settings.yml` sets
+  `search.formats: [html, json]`. Without `json`, SearXNG returns **HTTP 403**
+  to Open WebUI. The rate limiter is off (`server.limiter: false`) — fine for a
+  single local user, and it means no redis/valkey sidecar is needed.
+- **Secret / config:** `searxng/settings.yml` is **git-ignored** (holds a real
+  `server.secret_key`) and lives only on the server; the tracked template is
+  `searxng/settings.yml.example`. Being git-ignored, it also survives
+  `deploy.sh`'s `git reset`-style pull. To (re)create it:
+  `cp searxng/settings.yml.example searxng/settings.yml && sed -i "s/ultrasecretkey/$(openssl rand -hex 32)/" searxng/settings.yml`.
+  The searxng image only auto-generates a secret when `settings.yml` is absent;
+  since we bind-mount our own, the secret must be set in it.
+
 ## Secrets
 
 `WEBUI_SECRET_KEY` is provided by a `.env` file that exists **only on the
-server** (mode 600, git-ignored). `.env.example` holds a placeholder. CI's
-gitleaks scan is the guardrail that keeps a real secret out of this public repo.
+server** (mode 600, git-ignored). `.env.example` holds a placeholder. The
+SearXNG secret lives in the git-ignored `searxng/settings.yml` (see above).
+CI's gitleaks scan is the guardrail that keeps a real secret out of this public
+repo.
 
 ## Deploy model
 
