@@ -78,7 +78,10 @@ services:
     image: ghcr.io/home-assistant/home-assistant:2026.7.1
     container_name: homeassistant
     network_mode: host
-    privileged: true
+    # privileged: true  # disabled 2026-07-11 (security audit): full privileged not needed; BT uses cap_add below
+    cap_add:
+      - NET_ADMIN   # Bluetooth adapter management (habluetooth)
+      - NET_RAW     # Bluetooth adapter management (habluetooth)
     restart: unless-stopped
     environment:
       - TZ=America/Chicago
