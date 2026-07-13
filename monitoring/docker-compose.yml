@@ -85,7 +85,7 @@ services:
       - loki
 
   node-exporter:
-    image: prom/node-exporter:v1.11.1
+    image: prom/node-exporter:v1.12.0
     container_name: node-exporter
     restart: unless-stopped
     command:
