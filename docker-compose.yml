@@ -90,7 +90,7 @@ services:
       - /run/dbus:/run/dbus:ro
 
   piper:
-    image: rhasspy/wyoming-piper:2.2.2
+    image: rhasspy/wyoming-piper:2.3.1
     container_name: piper
     restart: unless-stopped
     ports:
