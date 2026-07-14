@@ -63,7 +63,7 @@ services:
   # reachable by the host-networked homeassistant container at 127.0.0.1:9200.
   # HA connects to it at http://127.0.0.1:9200/mcp (see README "Voice web search").
   searxng-mcp:
-    image: isokoliuk/mcp-searxng:1.11.0
+    image: isokoliuk/mcp-searxng:1.11.1
     container_name: searxng-mcp
     network_mode: host
     restart: unless-stopped
