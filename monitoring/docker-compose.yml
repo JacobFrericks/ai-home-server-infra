@@ -116,7 +116,7 @@ services:
       - monitoring
 
   nvidia-gpu-exporter:
-    image: utkuozdemir/nvidia_gpu_exporter:1.11.0
+    image: utkuozdemir/nvidia_gpu_exporter:1.12.0
     container_name: nvidia-gpu-exporter
     restart: unless-stopped
     # Shares the host PID namespace so nvidia-smi's per-process metrics
