@@ -33,6 +33,13 @@ searxng/
   settings.yml.example  # tracked template; real searxng/settings.yml is git-ignored (server-only)
 comfyui-mcp/         # locally-built MCP server for image generation (Dockerfile + server.py)
   workflow_api.json     # SDXL text-to-image graph (API format) — shared by the MCP tool and HA
+homeassistant/
+  custom_components/comfyui_generator/  # VENDORED HA AI Task integration (pinned; see VENDORED.md)
+scripts/
+  setup-image-gen.sh        # idempotent provisioning for image gen (the "start over" button)
+  openwebui-image-gen.py    # Open WebUI DB wiring (tool + gemma4:12b model)
+  ha-image-gen-config.py    # inject the HA ComfyUI AI Task config entry (root)
+  verify-services.sh        # functional PASS/FAIL check of the whole stack
 deploy.sh            # run on the server: git pull -> compose pull -> up -d -> health check
 .github/
   dependabot.yml               # opens PRs to bump the pinned image tags
@@ -106,13 +113,34 @@ RTX 3090; two front-ends drive the **same** ComfyUI backend:
    exposed by the **`comfyui-mcp`** MCP server (12b writes the prompt / decides
    when to fire; it is the orchestrator and stays warm). 12b is a *dedicated*
    image model — `gemma4:31b` (chat/voice) is untouched.
-2. **Home Assistant** — the **ComfyUI-Home-Assistant** custom integration (HA's
-   *AI Task → Generate Image*) points at the same ComfyUI. HA generates images
-   directly (no LLM, no MCP) from automations / Assist-on-a-screen.
+2. **Home Assistant** — the **AI Task → Generate Image** platform, via a
+   **vendored** copy of the `comfyui_generator` integration
+   (`homeassistant/custom_components/`), pointed at the same ComfyUI. HA generates
+   images directly (no LLM) from automations / scripts / Assist-on-a-screen.
+   *Why AI Task and not MCP:* HA's MCP client has a hard **10 s** tool-call timeout
+   that SDXL generation blows past; the AI Task path has a configurable timeout
+   (set to 120 s).
 
 Data path (Open WebUI): `gemma4:12b` (tool call) → `comfyui-mcp`
 (`127.0.0.1:9300/mcp`, streamable-HTTP) → `comfyui` (`127.0.0.1:8188`) → PNG
 returned as MCP image content (Open WebUI re-serves it to the browser).
+
+### One-command setup / "start over"
+
+The Docker services are codified in `docker-compose.yml` (brought up by
+`deploy.sh`). Everything else — the model pull, the SDXL checkpoint, the Open
+WebUI wiring, and the HA component + config entry — is codified in one
+**idempotent** script:
+
+```
+./deploy.sh                    # bring the stack up (services)
+./scripts/setup-image-gen.sh   # provision image gen (re-runnable; no sudo needed)
+```
+
+`setup-image-gen.sh` is a no-op for anything already in place, so it doubles as
+the rebuild button. It uses `scripts/openwebui-image-gen.py` (Open WebUI DB) and
+`scripts/ha-image-gen-config.py` (HA config entry) under the hood. The subsections
+below document what each step does (and how to do it by hand).
 
 ### VRAM: free-between-gens (why SDXL and gemma can coexist)
 
@@ -127,44 +155,48 @@ HA-triggered generation is still a second trigger for an SDXL *load* — if it
 fires while `gemma4:31b` is resident, SDXL won't fit and ComfyUI CPU-offloads
 (slow, not a crash). Avoid scheduling HA image automations during heavy voice use.
 
-### SDXL checkpoint (manual download, like Ollama model pulls)
+### SDXL checkpoint (`setup-image-gen.sh` step 2)
 
-Not automated. Place `sd_xl_base_1.0.safetensors` (~6.9 GB) into the
-`comfyui-data` volume at `ComfyUI/models/checkpoints/`:
+The `sd_xl_base_1.0.safetensors` checkpoint (~6.9 GB) is downloaded into the
+`comfyui-data` volume at `ComfyUI/models/checkpoints/`. The script also fixes the
+first-run volume ownership (a fresh named volume is root-owned; the ComfyUI image
+wants `1000:1000`). By hand:
 
 ```
 docker compose up -d comfyui   # first boot installs ComfyUI + venv into the volume
-docker compose exec -u 0 comfyui bash -lc \
+docker exec -u 1000 comfyui bash -lc \
   'cd /comfy/mnt/ComfyUI/models/checkpoints && \
    curl -fL -o sd_xl_base_1.0.safetensors \
    https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors'
 ```
 
-### Open WebUI wiring (runtime state in the `open-webui` DB, not in git)
+### Open WebUI wiring (`setup-image-gen.sh` step 4)
 
-Mirrors the SearXNG-MCP wiring:
+`scripts/openwebui-image-gen.py` edits the `open-webui` DB (idempotent) to add a
+`comfyui-image` MCP tool server (`127.0.0.1:9300/mcp`) and a customized
+`gemma4:12b` workspace model with the tool attached, **thinking off**, and
+**`num_ctx` 8192** (so its KV cache stays small next to SDXL). Runtime state lives
+in the `open-webui` volume, so it's scripted rather than committed. This mirrors
+the SearXNG-MCP wiring; the equivalent by hand is Admin → Settings → External
+Tools (add MCP server) + a workspace model with `meta.toolIds:
+["server:mcp:comfyui-image"]`.
 
-1. **Admin → Settings → External Tools** → add server, type *MCP (Streamable
-   HTTP)*, URL `http://127.0.0.1:9300/mcp`, auth *None*.
-2. Create a **`gemma4:12b`** workspace model; attach the tool as a default
-   (`meta.toolIds: ["server:mcp:comfyui-image"]`) so it's always on.
-3. **Disable thinking** for this model and keep **native function calling** on
-   (reliable tool-call emission), and **pin `num_ctx`** (e.g. 8192) so the KV
-   cache stays small alongside SDXL. A short `keep_alive` avoids 12b lingering.
+### Home Assistant wiring (`setup-image-gen.sh` step 5)
 
-### Home Assistant wiring (runtime state in HA config, not in git)
+The **vendored** `comfyui_generator` AI Task integration
+(`homeassistant/custom_components/comfyui_generator/`, pinned from
+[Incipiens/ComfyUI-Home-Assistant](https://github.com/Incipiens/ComfyUI-Home-Assistant),
+MIT — see its `VENDORED.md`) is copied into the live HA `custom_components/`,
+along with `comfyui-mcp/workflow_api.json` → `/config/comfyui_workflow_api.json`.
+`scripts/ha-image-gen-config.py` then creates the config entry by driving the
+integration's **config flow through HA's REST API** (no root — HA does it as
+itself): ComfyUI `http://127.0.0.1:8188`, that workflow, node ids **prompt=6 /
+resolution=5 / seed=3**, 1024×1024, 120 s timeout. It reads the HA token from
+`$HA_TOKEN` or the prometheus container (as `verify-services.sh` does).
 
-The **ComfyUI-Home-Assistant** custom integration is local-only (no API key):
-
-1. Install into `~/Documents/homeassistant/custom_components/` (no HACS is
-   installed — drop the component in and restart the `homeassistant` container).
-2. Add the integration (Settings → Devices & Services): **ComfyUI URL**
-   `http://127.0.0.1:8188` (HA is host-networked, so loopback reaches ComfyUI),
-   and the **workflow JSON** — export the SDXL graph from ComfyUI via *Save
-   (API)*, or use `comfyui-mcp/workflow_api.json`. Set a generous timeout.
-3. Generate via the `ai_task.generate_image` action (automations / scripts /
-   Assist). The image surfaces to a dashboard `image` entity — a *screenless*
-   voice satellite can't show it, so target a wall tablet / dashboard.
+Generate via the `ai_task.generate_image` action (automations / scripts / Assist).
+The image surfaces to a dashboard `image` entity — a *screenless* voice satellite
+can't show it, so target a wall tablet / dashboard.
 
 ## Secrets
 
@@ -205,7 +237,9 @@ service list, dashboards, alert rules, and secrets setup.
 - NVIDIA driver / CUDA host packages (held at the OS level).
 - Ollama version bumps and model pulls/prunes (manual).
 - Home Assistant bumps of any size (manual review always).
-- SDXL checkpoint download + Open WebUI/HA image-gen wiring (manual; see above).
+- Image-gen provisioning (model pull, SDXL checkpoint, Open WebUI + HA wiring) is
+  **not** part of the weekly `deploy.sh`, but it IS codified + idempotent in
+  `scripts/setup-image-gen.sh` — run it once (or to rebuild). See "Image generation".
 - Remote/external access (future: WireGuard).
 
 ## Plex (containerized — cut over 2026-07-10)
