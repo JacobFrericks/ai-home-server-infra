@@ -128,7 +128,7 @@ services:
       - comfyui
 
   homeassistant:
-    image: ghcr.io/home-assistant/home-assistant:2026.7.1
+    image: ghcr.io/home-assistant/home-assistant:2026.7.2
     container_name: homeassistant
     network_mode: host
     # privileged: true  # disabled 2026-07-11 (security audit): full privileged not needed; BT uses cap_add below
