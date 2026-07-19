@@ -39,6 +39,9 @@ scripts/
   setup-image-gen.sh        # idempotent provisioning for image gen (the "start over" button)
   openwebui-image-gen.py    # Open WebUI DB wiring (tool + gemma4:12b model)
   ha-image-gen-config.py    # inject the HA ComfyUI AI Task config entry (root)
+  setup-ha-owui-bridge.sh   # idempotent: let Open WebUI control HA (the "start over" button)
+  ha-owui-bridge-config.py  # enable HA's mcp_server integration (config-flow API)
+  openwebui-ha-bridge.py    # Open WebUI DB wiring (home-assistant tool + gemma4:31b)
   verify-services.sh        # functional PASS/FAIL check of the whole stack
 deploy.sh            # run on the server: git pull -> compose pull -> up -d -> health check
 .github/
@@ -141,6 +144,38 @@ WebUI wiring, and the HA component + config entry — is codified in one
 the rebuild button. It uses `scripts/openwebui-image-gen.py` (Open WebUI DB) and
 `scripts/ha-image-gen-config.py` (HA config entry) under the hood. The subsections
 below document what each step does (and how to do it by hand).
+
+## Home Assistant control (from Open WebUI)
+
+Open WebUI chat can **control Home Assistant** — "pause the TV", "add milk to the
+shopping list", and (once you add smart devices) "turn off the lights". This is
+the mirror image of web search: instead of HA reaching out to an MCP server, HA
+*exposes* one and Open WebUI consumes it.
+
+- **HA side:** the built-in **`mcp_server`** integration exposes HA's `assist`
+  toolset over **Streamable HTTP at `/api/mcp`** (HA 2026.7+). Turn/media/list
+  intents for every Assist-*exposed* entity become MCP tools (`HassTurnOn`,
+  `HassMediaPause`, `HassListAddItem`, …).
+- **Open WebUI side:** a bearer-authed `home-assistant` MCP tool server pointed at
+  `http://127.0.0.1:8123/api/mcp`, attached to the **`gemma4:31b`** model (which
+  keeps its `searxng-web` tool). Auth uses a **dedicated** HA long-lived token
+  ("Open WebUI MCP"), minted at setup and stored only in Open WebUI's DB.
+
+Scope follows HA's Assist exposure: only exposed entities are controllable. New
+smart devices show up automatically once integrated into HA and exposed to Assist
+— no further wiring here.
+
+### One-command setup / "start over"
+
+```
+./deploy.sh                          # bring the stack up (services)
+./scripts/setup-ha-owui-bridge.sh    # wire OWUI -> HA control (re-runnable; no sudo)
+```
+
+`setup-ha-owui-bridge.sh` is idempotent: it enables `mcp_server`
+(`scripts/ha-owui-bridge-config.py`), mints the dedicated token **only** if Open
+WebUI isn't already wired, and adds the tool via `scripts/openwebui-ha-bridge.py`.
+Reads the HA admin token from `$HA_TOKEN` or the prometheus `ha_token`.
 
 ### VRAM: free-between-gens (why SDXL and gemma can coexist)
 

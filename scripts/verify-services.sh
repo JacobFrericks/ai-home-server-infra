@@ -223,6 +223,40 @@ else
 fi
 
 # =========================================================================
+# 5c. Open WebUI -> Home Assistant control bridge (HA MCP Server)
+#     Checks HA's mcp_server integration is loaded and that Open WebUI has a
+#     bearer-authed home-assistant tool attached to gemma4:31b. Does not call
+#     any HA control action.
+# =========================================================================
+if [ -n "$HA_TOKEN" ]; then
+  ha_mcp=$(printf '%s' "$cfg" | python3 -c 'import sys,json
+try: print("yes" if "mcp_server" in set(json.load(sys.stdin).get("components",[])) else "no")
+except: print("ERR")')
+else
+  ha_mcp="ERR"
+fi
+owui_b=$(docker exec open-webui python3 /tmp/openwebui-ha-bridge.py --check 2>/dev/null \
+  || docker exec open-webui python3 - <<'PY' 2>/dev/null
+import sqlite3,json
+try:
+    db=sqlite3.connect("/app/backend/data/webui.db")
+    row=db.execute("select value from config where key='tool_server.connections'").fetchone()
+    conns=json.loads(row[0]) if row and row[0] else []
+    ha=[c for c in conns if (c.get("info") or {}).get("id")=="home-assistant"]
+    has_conn=bool(ha) and bool((ha[0].get("key") or "").strip()) and ha[0].get("auth_type")=="bearer"
+    m=db.execute("select meta from model where id='gemma4:31b'").fetchone()
+    tids=(json.loads(m[0]).get("toolIds") or []) if m and m[0] else []
+    print("WIRED" if (has_conn and "server:mcp:home-assistant" in tids) else "NEEDS_TOKEN")
+except Exception: print("NEEDS_TOKEN")
+PY
+)
+if [ "$ha_mcp" = yes ] && [ "$owui_b" = WIRED ]; then
+  record "OWUI->HA bridge" PASS "mcp_server loaded; gemma4:31b has home-assistant tool"
+else
+  record "OWUI->HA bridge" FAIL "mcp_server=$ha_mcp; owui=$owui_b"
+fi
+
+# =========================================================================
 # 6. Piper -> Whisper voice round-trip (raw-socket Wyoming, no installs)
 # =========================================================================
 voice=$(python3 - <<'PY'
