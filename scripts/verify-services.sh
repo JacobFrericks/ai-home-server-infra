@@ -3,7 +3,9 @@
 # Runs as jacob (no sudo required: uses the docker group + jacob-owned monitoring/.env).
 # Exercises each service end-to-end and prints a PASS/FAIL table. Exit 0 iff all pass.
 # Contains NO secrets: reads ha_token via `docker cp` and creds from monitoring/.env at runtime.
-# Only ever touches the gemma4:31b Ollama model.
+# Only ever RUNS the gemma4:31b Ollama model (a 1-token generation). Other models
+# (gemma4:12b/26b) are only listed for presence, never loaded; ComfyUI is checked
+# for reachability + checkpoint but no image is generated (that would load SDXL).
 set -uo pipefail
 
 STACK_DIR="/home/jacob/docker/ai-stack"
@@ -151,6 +153,74 @@ except Exception as e:
 PY
 )
 record "SearXNG-MCP" "${mcp%%|*}" "${mcp#*|}"
+
+# =========================================================================
+# 5b. Image generation: ComfyUI + comfyui-mcp + gemma4:12b presence
+#     NB: no image is generated here — a real generation loads SDXL and is a
+#     heavy, opt-in step (see README). This block only checks reachability,
+#     that the SDXL checkpoint is present, that the MCP tool is exposed, and
+#     that the 12b orchestrator model exists (listed, never loaded).
+# =========================================================================
+cu_h=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8188/system_stats)
+cu_ckpt=$(curl -s --max-time 15 http://127.0.0.1:8188/object_info/CheckpointLoaderSimple | python3 -c '
+import sys,json
+try:
+    d=json.load(sys.stdin)
+    ck=d["CheckpointLoaderSimple"]["input"]["required"]["ckpt_name"][0]
+    print("yes" if any("sd_xl_base" in c for c in ck) else "no", len(ck))
+except Exception:
+    print("ERR 0")')
+read -r ckpt_has ckpt_n <<< "$cu_ckpt"
+if [ "$cu_h" = 200 ] && [ "$ckpt_has" = yes ]; then
+  record "ComfyUI (SDXL)" PASS "system_stats=200, SDXL checkpoint present ($ckpt_n ckpts)"
+else
+  record "ComfyUI (SDXL)" FAIL "system_stats=$cu_h, sdxl_checkpoint=$ckpt_has ($ckpt_n ckpts)"
+fi
+
+cmcp=$(python3 - <<'PY'
+import json,urllib.request
+BASE="http://127.0.0.1:9300/mcp"
+HDR={"Content-Type":"application/json","Accept":"application/json, text/event-stream"}
+def parse(body,ct):
+    body=body.decode("utf-8","replace")
+    if "text/event-stream" in (ct or ""):
+        for line in body.splitlines():
+            if line.startswith("data:"):
+                try: return json.loads(line[5:].strip())
+                except: pass
+        return None
+    try: return json.loads(body)
+    except: return None
+def post(obj, sid=None):
+    h=dict(HDR)
+    if sid: h["Mcp-Session-Id"]=sid
+    req=urllib.request.Request(BASE, data=json.dumps(obj).encode(), headers=h, method="POST")
+    r=urllib.request.urlopen(req, timeout=15)
+    return r, parse(r.read(), r.headers.get("Content-Type"))
+try:
+    init={"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"verify","version":"1.0"}}}
+    r,_=post(init)
+    sid=r.headers.get("Mcp-Session-Id")
+    try: post({"jsonrpc":"2.0","method":"notifications/initialized"}, sid)
+    except Exception: pass
+    r,res=post({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}, sid)
+    tools=[t["name"] for t in (res or {}).get("result",{}).get("tools",[])]
+    if "generate_image" in tools: print("PASS|%d tool(s): %s" % (len(tools), ",".join(tools)[:60]))
+    else: print("FAIL|generate_image missing (tools: %s)" % ",".join(tools)[:50])
+except Exception as e:
+    print("FAIL|%s" % str(e)[:80])
+PY
+)
+record "comfyui-mcp" "${cmcp%%|*}" "${cmcp#*|}"
+
+g12=$(curl -s --max-time 10 http://127.0.0.1:11434/api/tags | python3 -c 'import sys,json
+try: print(sum(1 for m in json.load(sys.stdin).get("models",[]) if m.get("name","").startswith("gemma4:12b")))
+except: print(0)')
+if [ "${g12:-0}" -ge 1 ]; then
+  record "Ollama (gemma4:12b present)" PASS "in ollama list (image-gen orchestrator; not loaded)"
+else
+  record "Ollama (gemma4:12b present)" FAIL "gemma4:12b not found in /api/tags"
+fi
 
 # =========================================================================
 # 6. Piper -> Whisper voice round-trip (raw-socket Wyoming, no installs)

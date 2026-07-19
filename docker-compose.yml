@@ -74,6 +74,59 @@ services:
     depends_on:
       - searxng
 
+  # ComfyUI — local SDXL text-to-image backend for the image-generation feature.
+  # Published on LOOPBACK ONLY (127.0.0.1:8188), like SearXNG, so it never touches
+  # the LAN; both front-ends reach it over loopback — open-webui via comfyui-mcp
+  # below, and Home Assistant's AI Task integration (ComfyUI-Home-Assistant, a
+  # runtime custom_component — see README). Shares the RTX 3090 with Ollama/Plex,
+  # so VRAM strategy is "free-between-gens". ComfyUI's default DynamicVRAM already
+  # UNLOADS models to CPU after each run (no flag needed — --highvram would be the
+  # opt-in to pin them, which we do NOT set), so SDXL (~8-10 GB) only holds the GPU
+  # during the ~10-20s generation window; comfyui-mcp also POSTs /free as a belt-
+  # and-braces release. The SDXL checkpoint (sd_xl_base_1.0.safetensors) is a
+  # MANUAL download into the comfyui-data volume at ComfyUI/models/checkpoints.
+  comfyui:
+    image: mmartial/comfyui-nvidia-docker:ubuntu24_cuda13.1-20260605
+    container_name: comfyui
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8188:8188"
+    environment:
+      - WANTED_UID=1000
+      - WANTED_GID=1000
+      - SECURITY_LEVEL=normal
+    volumes:
+      # /comfy/mnt is the image's run dir: ComfyUI source, venv, and (no
+      # BASE_DIRECTORY set) the models/input/output tree under ComfyUI/.
+      - comfyui-data:/comfy/mnt
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # comfyui-mcp — MCP server exposing a `generate_image` tool that drives ComfyUI
+  # above. Mirrors searxng-mcp exactly: streamable-HTTP, LOOPBACK ONLY
+  # (127.0.0.1:9300), host networking so it reaches ComfyUI at 127.0.0.1:8188 and
+  # is reachable by the host-networked open-webui. Attached to the gemma4:12b
+  # workspace model in Open WebUI as an always-on tool (runtime — see README).
+  # Built locally (no upstream image); the local image: tag lets `docker compose
+  # pull --ignore-buildable` skip it. Never touches Ollama.
+  comfyui-mcp:
+    build: ./comfyui-mcp
+    image: comfyui-mcp:local
+    container_name: comfyui-mcp
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - COMFYUI_URL=http://127.0.0.1:8188
+      - MCP_HTTP_HOST=127.0.0.1
+      - MCP_HTTP_PORT=9300
+    depends_on:
+      - comfyui
+
   homeassistant:
     image: ghcr.io/home-assistant/home-assistant:2026.7.1
     container_name: homeassistant
@@ -143,3 +196,6 @@ services:
 volumes:
   open-webui:
     external: true
+  # ComfyUI run dir (/comfy/mnt): ComfyUI source + venv, plus the models tree
+  # (incl. the manually-downloaded SDXL checkpoint) under ComfyUI/models.
+  comfyui-data:

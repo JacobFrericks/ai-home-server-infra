@@ -24,10 +24,12 @@ else
 fi
 
 # 2. Pull the pinned images and apply. Only changed services are recreated.
-log "docker compose pull"
-docker compose pull
-log "docker compose up -d"
-docker compose up -d
+#    --ignore-buildable skips comfyui-mcp (built locally, no registry image);
+#    --build (re)builds it so `up -d` always has a current comfyui-mcp image.
+log "docker compose pull --ignore-buildable"
+docker compose pull --ignore-buildable
+log "docker compose up -d --build"
+docker compose up -d --build
 
 # 2b. Bring up the separate monitoring stack (Prometheus/Loki/Grafana), if its
 #     server-only secrets are in place. It's a distinct compose project so it
@@ -54,6 +56,10 @@ curl -fsS -o /dev/null "http://127.0.0.1:8123/" || ok=0
 # over it — just warn.
 curl -fsS -o /dev/null "http://127.0.0.1:32400/identity" \
   || log "warning: Plex :32400 not responding (expected until cutover runbook is run)"
+# ComfyUI check is best-effort: image gen is optional and its own thing; don't
+# fail deploys over it — just warn (e.g. if the SDXL checkpoint isn't in place).
+curl -fsS -o /dev/null "http://127.0.0.1:8188/system_stats" \
+  || log "warning: ComfyUI :8188 not responding (image generation; see README)"
 # Grafana check is best-effort too: the monitoring stack only comes up once
 # its server-only secrets exist (see step 2b above).
 curl -fsS -o /dev/null "http://127.0.0.1:3000/api/health" \
