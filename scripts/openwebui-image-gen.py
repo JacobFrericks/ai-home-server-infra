@@ -7,7 +7,8 @@ Run INSIDE the open-webui container (the DB lives in its volume):
     docker restart open-webui
 
 Adds:
-  * a `comfyui-image` MCP tool server (streamable-HTTP, 127.0.0.1:9300/mcp)
+  * a `generate` MCP tool server (streamable-HTTP, 127.0.0.1:9300/mcp),
+    whose single tool registers in Open WebUI as `generate_image`
   * a customized `gemma4:12b` workspace model with that tool attached, thinking
     off, and num_ctx pinned to 8192 (so its KV cache stays small next to SDXL).
 Mirrors the existing searxng-web / gemma4:31b setup. See README "Image generation".
@@ -22,31 +23,42 @@ except sqlite3.Error as e:
     sys.exit(f"cannot open {DB}: {e}")
 cur = c.cursor()
 
-# 1) comfyui-image MCP tool server in tool_server.connections (idempotent).
+# 1) MCP tool server in tool_server.connections (self-healing).
+#    Open WebUI registers each MCP tool as "<connection_id>_<mcp_tool_name>" and
+#    routes calls by that exact string. A small model mangles a namespaced id:
+#    in prompt-based ("legacy") tool calling — which some clients (e.g. the
+#    Conduit Android app) force per-request regardless of the model's
+#    function_calling setting — gemma drops the server prefix and emits the bare
+#    raw name; native calling would use the full prefixed name. To route in BOTH
+#    modes the registered name must equal what the model emits either way, so the
+#    MCP tool is named "image" (see comfyui-mcp/server.py) and the connection id
+#    is "generate" -> registered name "generate_image", the canonical name gemma
+#    reproduces verbatim. The MCP server is still invoked by its raw name ("image").
+CONN_ID = "generate"
+LEGACY_IDS = {"comfyui-image", "comfyui_image"}
 row = cur.execute("select value from config where key='tool_server.connections'").fetchone()
 conns = json.loads(row[0]) if row and row[0] else []
-if any((x.get("info") or {}).get("id") == "comfyui-image" for x in conns):
-    print("tool_server.connections: comfyui-image already present")
+# Drop any legacy or duplicate entry for this server, then (re)add the canonical one.
+conns = [x for x in conns if (x.get("info") or {}).get("id") not in (LEGACY_IDS | {CONN_ID})]
+conns.append({
+    "type": "mcp",
+    "url": "http://127.0.0.1:9300/mcp",
+    "auth_type": "none",
+    "key": "",
+    "config": {"enable": True, "function_name_filter_list": ""},
+    "info": {
+        "id": CONN_ID,
+        "name": "Image Generation (SDXL)",
+        "description": "Generate images locally via ComfyUI / SDXL",
+    },
+})
+if row:
+    cur.execute("update config set value=?, updated_at=? where key='tool_server.connections'",
+                (json.dumps(conns), int(time.time())))
 else:
-    conns.append({
-        "type": "mcp",
-        "url": "http://127.0.0.1:9300/mcp",
-        "auth_type": "none",
-        "key": "",
-        "config": {"enable": True, "function_name_filter_list": ""},
-        "info": {
-            "id": "comfyui-image",
-            "name": "Image Generation (SDXL)",
-            "description": "Generate images locally via ComfyUI / SDXL",
-        },
-    })
-    if row:
-        cur.execute("update config set value=?, updated_at=? where key='tool_server.connections'",
-                    (json.dumps(conns), int(time.time())))
-    else:
-        cur.execute("insert into config (key, value, updated_at) values (?,?,?)",
-                    ("tool_server.connections", json.dumps(conns), int(time.time())))
-    print("tool_server.connections: added comfyui-image (now %d)" % len(conns))
+    cur.execute("insert into config (key, value, updated_at) values (?,?,?)",
+                ("tool_server.connections", json.dumps(conns), int(time.time())))
+print("tool_server.connections: set %s (now %d)" % (CONN_ID, len(conns)))
 
 # 2) Customized gemma4:12b workspace model (idempotent upsert).
 uid = cur.execute("select user_id from model where id='gemma4:31b'").fetchone()
@@ -65,7 +77,7 @@ meta = {
         "terminal": False, "citations": True, "status_updates": True,
         "builtin_tools": True,
     },
-    "toolIds": ["server:mcp:comfyui-image"],
+    "toolIds": ["server:mcp:generate"],
     "tags": [],
 }
 params = {
@@ -74,12 +86,19 @@ params = {
         "create, draw, generate, imagine, paint, or make a picture / image / art, call "
         "the generate_image tool, passing a vivid, detailed English description as the "
         "`prompt` argument (translate the user's request into a rich visual description). "
-        "The generated image is displayed to the user automatically — after it is created, "
-        "briefly say what you made. For anything that is not an image request, just answer "
-        "normally."
+        "The generated image is shown to the user automatically once the tool finishes "
+        "— just add one short sentence saying what you made. Never output JSON or restate "
+        "the tool call or its arguments. For anything that is not an image request, just "
+        "answer normally."
     ),
     "num_ctx": 8192,
     "think": False,
+    # Prefer native (API) function calling. Legacy (prompt-based) makes the small
+    # model free-form the tool name as text; some clients force legacy per-request
+    # regardless of this setting, so the tool is *named* to route in legacy too
+    # (registered name == "generate_image"; see the CONN_ID note above). Native is
+    # kept as belt-and-suspenders for clients that honour it.
+    "function_calling": "native",
 }
 
 now = int(time.time())

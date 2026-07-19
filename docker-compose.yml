@@ -124,6 +124,16 @@ services:
       - COMFYUI_URL=http://127.0.0.1:8188
       - MCP_HTTP_HOST=127.0.0.1
       - MCP_HTTP_PORT=9300
+      # Delivery via Open WebUI's files API: generated images are uploaded and
+      # returned as an ABSOLUTE-URL markdown image so they render in both the
+      # browser AND the Conduit mobile client (a relative URL renders broken in
+      # Conduit). Upload auth is a JWT the MCP mints from WEBUI_SECRET_KEY.
+      # OWUI_PUBLIC_URL must match the origin clients use to reach Open WebUI
+      # (same-origin is required for the mobile client to attach its auth token).
+      - OWUI_UPLOAD_URL=http://127.0.0.1:8080
+      - OWUI_PUBLIC_URL=${OWUI_PUBLIC_URL}
+      - OWUI_USER_ID=${OWUI_USER_ID}
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
     depends_on:
       - comfyui
 

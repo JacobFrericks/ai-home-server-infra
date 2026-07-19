@@ -71,6 +71,18 @@ docker compose up -d --build comfyui-mcp
 log "wiring Open WebUI (comfyui-image tool + gemma4:12b model)..."
 docker cp scripts/openwebui-image-gen.py open-webui:/tmp/openwebui-image-gen.py
 docker exec open-webui python3 /tmp/openwebui-image-gen.py
+# Filters (installed via the generic installer; both global + active):
+#  - render_tool_images (outlet): injects the tool's absolute-URL image markdown
+#    into the assistant message so generated images render in all clients (incl.
+#    Conduit, which cannot resolve relative tool-call image URLs).
+#  - ensure_model_tools (inlet): re-attaches the model's configured toolIds when
+#    the client omits them, so tools keep working on follow-up turns (Conduit
+#    only sends tool_ids on the first message of a chat).
+docker cp scripts/openwebui-install-filter.py open-webui:/tmp/openwebui-install-filter.py
+docker cp scripts/render_tool_images.py open-webui:/tmp/render_tool_images.py
+docker exec open-webui python3 /tmp/openwebui-install-filter.py render_tool_images "Render Tool Images" /tmp/render_tool_images.py "Appends absolute-URL tool-call image markdown into the assistant message so generated images render in all clients (incl. Conduit)."
+docker cp scripts/ensure_model_tools.py open-webui:/tmp/ensure_model_tools.py
+docker exec open-webui python3 /tmp/openwebui-install-filter.py ensure_model_tools "Ensure Model Tools" /tmp/ensure_model_tools.py "Re-attaches a model configured tools when the client omits them (e.g. Conduit follow-up turns)."
 docker restart open-webui >/dev/null
 
 # --- 5. Home Assistant AI Task component + config (no root needed) -----------

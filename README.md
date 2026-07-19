@@ -125,8 +125,28 @@ RTX 3090; two front-ends drive the **same** ComfyUI backend:
    (set to 120 s).
 
 Data path (Open WebUI): `gemma4:12b` (tool call) → `comfyui-mcp`
-(`127.0.0.1:9300/mcp`, streamable-HTTP) → `comfyui` (`127.0.0.1:8188`) → PNG
-returned as MCP image content (Open WebUI re-serves it to the browser).
+(`127.0.0.1:9300/mcp`, streamable-HTTP) → `comfyui` (`127.0.0.1:8188`) → PNG.
+`comfyui-mcp` then **uploads the PNG to Open WebUI's files API** and returns a
+markdown image with an **absolute, same-origin** content URL
+(`![](http://<host>:8080/api/v1/files/<id>/content)`).
+
+*Why upload instead of returning the raw PNG:* returning MCP image content makes
+Open WebUI store the file and reference it by a **relative** `/api/v1/files/<id>/content`
+URL. That renders in the browser (which sends a `token` cookie) but **not** in the
+[Conduit](https://conduit.mobile/) mobile client, which passes tool-call image URLs
+to its image widget without resolving them against the server base — so a relative
+URL loads as a broken image. An **absolute** same-origin URL renders in both: the
+browser via its `token` cookie, and Conduit via the `Authorization: Bearer` header
+it attaches to same-origin image requests. (Upstream Conduit bug as of `main`
+2026-07-18; see `comfyui-mcp/server.py` header for the full rationale.)
+
+Delivery is configured on the `comfyui-mcp` service in `docker-compose.yml` via
+`OWUI_UPLOAD_URL` (internal POST target), `OWUI_PUBLIC_URL` (**must match the
+origin clients use** — same-origin is required for Conduit to attach its token),
+`OWUI_USER_ID`, and `WEBUI_SECRET_KEY` (the MCP mints a short-lived Open WebUI JWT
+from it to authenticate the upload). `OWUI_PUBLIC_URL`/`OWUI_USER_ID` live in `.env`
+(see `.env.example`). If any are unset the MCP falls back to returning inline image
+content (browser-only rendering).
 
 ### One-command setup / "start over"
 
