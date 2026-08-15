@@ -47,7 +47,7 @@ POLL_TIMEOUT = int(os.environ.get("GEN_TIMEOUT", "180"))  # seconds
 # uploaded to Open WebUI and returned as an absolute-URL markdown image so they
 # render in both the browser and the Conduit mobile client. See module docstring.
 OWUI_UPLOAD_URL = os.environ.get("OWUI_UPLOAD_URL", "").rstrip("/")   # e.g. http://127.0.0.1:8080 (internal POST target)
-OWUI_PUBLIC_URL = os.environ.get("OWUI_PUBLIC_URL", "").rstrip("/")   # e.g. http://192.168.86.63:8080 (what clients fetch)
+OWUI_PUBLIC_URL = os.environ.get("OWUI_PUBLIC_URL", "").rstrip("/")   # e.g. http://<server-lan-ip>:8080 (what clients fetch)
 OWUI_USER_ID = os.environ.get("OWUI_USER_ID", "")
 WEBUI_SECRET_KEY = os.environ.get("WEBUI_SECRET_KEY", "")
 

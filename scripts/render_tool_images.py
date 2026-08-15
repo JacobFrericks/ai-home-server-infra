@@ -12,7 +12,7 @@ required_open_webui_version: 0.5.0
 # --------------
 # Our comfyui-image MCP tool uploads the generated PNG to Open WebUI's files API
 # and returns a Markdown image tag with an ABSOLUTE same-origin URL, e.g.
-#   ![generated image](http://192.168.86.63:8080/api/v1/files/<id>/content)
+#   ![generated image](http://<server-lan-ip>:8080/api/v1/files/<id>/content)
 # That tag lands in the assistant message's `output` as a `function_call_output`,
 # NOT in the visible message `content`. Open WebUI's web UI hides it behind a
 # collapsed "View Result" panel, and the model cannot be relied on to copy the

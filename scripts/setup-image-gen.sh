@@ -68,7 +68,12 @@ log "building + starting comfyui-mcp..."
 docker compose up -d --build comfyui-mcp
 
 # --- 4. Open WebUI wiring ----------------------------------------------------
+# Prompt text is server-only (git-ignored prompts/ dir; this repo is public).
+[ -s prompts/image-gen-system.txt ] || {
+  echo "FATAL: missing prompts/image-gen-system.txt -- see prompts/README.md" >&2; exit 1; }
+
 log "wiring Open WebUI (comfyui-image tool + gemma4:12b model)..."
+docker cp prompts/image-gen-system.txt open-webui:/tmp/image-gen-system.txt
 docker cp scripts/openwebui-image-gen.py open-webui:/tmp/openwebui-image-gen.py
 docker exec open-webui python3 /tmp/openwebui-image-gen.py
 # Filters (installed via the generic installer; both global + active):

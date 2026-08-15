@@ -297,7 +297,7 @@ else
   ha_mcp="ERR"
 fi
 owui_b=$(docker exec open-webui python3 /tmp/openwebui-ha-bridge.py --check 2>/dev/null \
-  || docker exec open-webui python3 - <<'PY' 2>/dev/null
+  || docker exec -i open-webui python3 - <<'PY' 2>/dev/null
 import sqlite3,json
 try:
     db=sqlite3.connect("/app/backend/data/webui.db")

@@ -5,11 +5,15 @@
 useDefault = true
 
 [allowlist]
+# Allowlist by VALUE, never by path. This previously exempted the whole of
+# .env.example by path, which meant a real secret pasted into that file would
+# have sailed through the full-history scan -- the guardrail read stronger than
+# it was. Every entry below matches one specific documented placeholder string.
 description = "Documented placeholders and the CI dummy value (not real secrets)"
 regexes = [
   '''ci-dummy-not-a-real-secret''',
   '''REPLACE_WITH_OPENSSL_RAND_HEX_32''',
-]
-paths = [
-  '''\.env\.example$''',
+  '''REPLACE_WITH_OPENSSL_RAND_BASE64_24''',
+  '''REPLACE_WITH_PLEX_TOKEN''',
+  '''ultrasecretkey''',
 ]

@@ -13,9 +13,21 @@ Adds:
     off, and num_ctx pinned to 8192 (so its KV cache stays small next to SDXL).
 Mirrors the existing searxng-web / gemma4:31b setup. See README "Image generation".
 """
-import sqlite3, json, time, sys
+import sqlite3, json, time, sys, os
 
 DB = "/app/backend/data/webui.db"
+
+# The model's system prompt lives in the git-ignored prompts/ dir (see
+# prompts/README.md): this repo is public, and a system prompt is configuration,
+# not source. setup-image-gen.sh docker-cp's it to /tmp/image-gen-system.txt.
+PROMPT_FILE = os.environ.get("IMAGE_GEN_PROMPT_FILE", "/tmp/image-gen-system.txt")
+try:
+    SYSTEM_PROMPT = open(PROMPT_FILE, encoding="utf-8").read().strip()
+except OSError as e:
+    sys.exit(f"cannot read image-gen system prompt {PROMPT_FILE}: {e}\n"
+             f"Expected prompts/image-gen-system.txt to be copied in; see prompts/README.md")
+if not SYSTEM_PROMPT:
+    sys.exit(f"{PROMPT_FILE} is empty; refusing to install a model with no system prompt")
 
 try:
     c = sqlite3.connect(DB)
@@ -81,16 +93,9 @@ meta = {
     "tags": [],
 }
 params = {
-    "system": (
-        "You can generate images with a local image model. When the user asks you to "
-        "create, draw, generate, imagine, paint, or make a picture / image / art, call "
-        "the generate_image tool, passing a vivid, detailed English description as the "
-        "`prompt` argument (translate the user's request into a rich visual description). "
-        "The generated image is shown to the user automatically once the tool finishes "
-        "— just add one short sentence saying what you made. Never output JSON or restate "
-        "the tool call or its arguments. For anything that is not an image request, just "
-        "answer normally."
-    ),
+    # Prompt text lives in the git-ignored prompts/ dir (see prompts/README.md); this
+    # repo is public. setup-image-gen.sh docker-cp's it alongside this script.
+    "system": SYSTEM_PROMPT,
     "num_ctx": 8192,
     "think": False,
     # Prefer native (API) function calling. Legacy (prompt-based) makes the small
