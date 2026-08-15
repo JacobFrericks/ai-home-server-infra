@@ -3,7 +3,7 @@
 # Runs as jacob (no sudo required: uses the docker group + jacob-owned monitoring/.env).
 # Exercises each service end-to-end and prints a PASS/FAIL table. Exit 0 iff all pass.
 # Contains NO secrets: reads ha_token via `docker cp` and creds from monitoring/.env at runtime.
-# Only ever RUNS the gemma4:31b Ollama model (a 1-token generation). Other models
+# Only ever RUNS the gemma4:26b Ollama model (a 1-token generation). Other models
 # (gemma4:12b/26b) are only listed for presence, never loaded; ComfyUI is checked
 # for reachability + checkpoint but no image is generated (that would load SDXL).
 set -uo pipefail
@@ -55,11 +55,11 @@ else
 fi
 
 # =========================================================================
-# 2. Ollama  (gemma4:31b ONLY)
+# 2. Ollama  (gemma4:26b ONLY)
 # =========================================================================
 t0=$(date +%s.%N)
 og=$(curl -s --max-time 240 http://127.0.0.1:11434/api/generate \
-   -d '{"model":"gemma4:31b","prompt":"Reply with the single word: ok","stream":false,"think":false,"options":{"num_predict":16}}')
+   -d '{"model":"gemma4:26b","prompt":"Reply with the single word: ok","stream":false,"think":false,"options":{"num_predict":16}}')
 t1=$(date +%s.%N)
 # Success = the model actually generated tokens (done + eval_count>0, no error),
 # not merely non-empty text (a 1-token reply can render empty).
@@ -68,7 +68,7 @@ try:
     d=json.load(sys.stdin)
     if d.get("error"): print("ERR|"+str(d["error"])[:50]); raise SystemExit
     ok = d.get("done") and (d.get("eval_count") or 0) > 0
-    # gemma4:31b is a reasoning model — tokens may land in "thinking" before "response"
+    # gemma4:26b is a reasoning model — tokens may land in "thinking" before "response"
     txt=(d.get("response") or "").strip()
     if not txt: txt="[thinking] "+(d.get("thinking") or "").strip()
     txt=txt.replace("\n"," ")[:44]
@@ -77,9 +77,9 @@ except SystemExit: pass
 except Exception as e: print("ERR|"+str(e)[:50])')
 odur=$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.1f", b-a}')
 if [ "${ostat%%|*}" = OK ]; then
-  record "Ollama (gemma4:31b)" PASS "${ostat#*|}, ${odur}s"
+  record "Ollama (gemma4:26b)" PASS "${ostat#*|}, ${odur}s"
 else
-  record "Ollama (gemma4:31b)" FAIL "${ostat#*|} (${odur}s)"
+  record "Ollama (gemma4:26b)" FAIL "${ostat#*|} (${odur}s)"
 fi
 
 # =========================================================================
@@ -205,13 +205,74 @@ try:
     except Exception: pass
     r,res=post({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}, sid)
     tools=[t["name"] for t in (res or {}).get("result",{}).get("tools",[])]
-    if "generate_image" in tools: print("PASS|%d tool(s): %s" % (len(tools), ",".join(tools)[:60]))
-    else: print("FAIL|generate_image missing (tools: %s)" % ",".join(tools)[:50])
+    # The MCP server names its tool "image" on purpose; Open WebUI registers it
+    # as "generate_image" (connection id "generate" + tool "image"). At the raw
+    # MCP level checked here the tool is "image".
+    if "image" in tools: print("PASS|%d tool(s): %s (registers as generate_image)" % (len(tools), ",".join(tools)[:50]))
+    else: print("FAIL|image tool missing (tools: %s)" % ",".join(tools)[:50])
 except Exception as e:
     print("FAIL|%s" % str(e)[:80])
 PY
 )
 record "comfyui-mcp" "${cmcp%%|*}" "${cmcp#*|}"
+
+# 5c. Persistent memory: memory-mcp tools reachable + Open WebUI wiring.
+#     Checks the MCP server exposes its save/list/update/delete tools, and that
+#     assistant has the memory tool attached and the memory_recall filter is
+#     installed (active + global). No memory is written. See README "Memory".
+memmcp=$(python3 - <<'PY'
+import json,urllib.request
+BASE="http://127.0.0.1:9400/mcp"
+HDR={"Content-Type":"application/json","Accept":"application/json, text/event-stream"}
+def parse(body,ct):
+    body=body.decode("utf-8","replace")
+    if "text/event-stream" in (ct or ""):
+        for line in body.splitlines():
+            if line.startswith("data:"):
+                try: return json.loads(line[5:].strip())
+                except: pass
+        return None
+    try: return json.loads(body)
+    except: return None
+def post(obj, sid=None):
+    h=dict(HDR)
+    if sid: h["Mcp-Session-Id"]=sid
+    req=urllib.request.Request(BASE, data=json.dumps(obj).encode(), headers=h, method="POST")
+    r=urllib.request.urlopen(req, timeout=15)
+    return r, parse(r.read(), r.headers.get("Content-Type"))
+try:
+    init={"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"verify","version":"1.0"}}}
+    r,_=post(init)
+    sid=r.headers.get("Mcp-Session-Id")
+    try: post({"jsonrpc":"2.0","method":"notifications/initialized"}, sid)
+    except Exception: pass
+    r,res=post({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}, sid)
+    tools=[t["name"] for t in (res or {}).get("result",{}).get("tools",[])]
+    if "save_memory" in tools: print("PASS|%d tool(s): %s" % (len(tools), ",".join(tools)[:60]))
+    else: print("FAIL|save_memory missing (tools: %s)" % ",".join(tools)[:50])
+except Exception as e:
+    print("FAIL|%s" % str(e)[:80])
+PY
+)
+record "memory-mcp" "${memmcp%%|*}" "${memmcp#*|}"
+
+memwire=$(docker exec -i open-webui python3 - <<'PY' 2>/dev/null
+import sqlite3, json
+c=sqlite3.connect("/app/backend/data/webui.db")
+r=c.execute("select meta from model where id='assistant'").fetchone()
+tids=(json.loads(r[0]) if r and r[0] else {}).get("toolIds") or []
+f=c.execute("select is_active,is_global from function where id='memory_recall'").fetchone()
+fids=(json.loads(r[0]).get("filterIds") or []) if r and r[0] else []
+has_tool="server:mcp:memory" in tids
+has_filter=bool(f) and f[0]==1 and (f[1]==1 or "memory_recall" in fids)
+print("WIRED" if (has_tool and has_filter) else "MISSING|tool=%s filter=%s" % (has_tool, has_filter))
+PY
+)
+if [ "${memwire%%|*}" = WIRED ]; then
+  record "Memory wiring" PASS "assistant has memory tool; memory_recall filter active"
+else
+  record "Memory wiring" FAIL "${memwire#*|}"
+fi
 
 g12=$(curl -s --max-time 10 http://127.0.0.1:11434/api/tags | python3 -c 'import sys,json
 try: print(sum(1 for m in json.load(sys.stdin).get("models",[]) if m.get("name","").startswith("gemma4:12b")))
@@ -225,7 +286,7 @@ fi
 # =========================================================================
 # 5c. Open WebUI -> Home Assistant control bridge (HA MCP Server)
 #     Checks HA's mcp_server integration is loaded and that Open WebUI has a
-#     bearer-authed home-assistant tool attached to gemma4:31b. Does not call
+#     bearer-authed home-assistant tool attached to assistant. Does not call
 #     any HA control action.
 # =========================================================================
 if [ -n "$HA_TOKEN" ]; then
@@ -244,14 +305,14 @@ try:
     conns=json.loads(row[0]) if row and row[0] else []
     ha=[c for c in conns if (c.get("info") or {}).get("id")=="home-assistant"]
     has_conn=bool(ha) and bool((ha[0].get("key") or "").strip()) and ha[0].get("auth_type")=="bearer"
-    m=db.execute("select meta from model where id='gemma4:31b'").fetchone()
+    m=db.execute("select meta from model where id='assistant'").fetchone()
     tids=(json.loads(m[0]).get("toolIds") or []) if m and m[0] else []
     print("WIRED" if (has_conn and "server:mcp:home-assistant" in tids) else "NEEDS_TOKEN")
 except Exception: print("NEEDS_TOKEN")
 PY
 )
 if [ "$ha_mcp" = yes ] && [ "$owui_b" = WIRED ]; then
-  record "OWUI->HA bridge" PASS "mcp_server loaded; gemma4:31b has home-assistant tool"
+  record "OWUI->HA bridge" PASS "mcp_server loaded; assistant has home-assistant tool"
 else
   record "OWUI->HA bridge" FAIL "mcp_server=$ha_mcp; owui=$owui_b"
 fi

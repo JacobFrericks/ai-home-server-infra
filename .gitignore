@@ -12,3 +12,17 @@ deploy.log
 # SearXNG real settings (holds secret_key). Server-only; the tracked
 # template is searxng/settings.yml.example.
 searxng/settings.yml
+
+# Persistent-memory files (personal facts about the user). Server-only, never
+# in this public repo. Written by memory-mcp; see README "Memory".
+memory-data/
+
+# Model system prompts. Server-only: this repo is public, and a system prompt is
+# configuration for how the assistant behaves, not source. The setup scripts read
+# them at install time; see prompts/README.md (tracked) for what belongs here.
+prompts/*
+!prompts/README.md
+
+# Python bytecode
+__pycache__/
+*.pyc

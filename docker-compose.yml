@@ -34,6 +34,11 @@ services:
       - ENABLE_WEB_SEARCH=false
     volumes:
       - open-webui:/app/backend/data
+      # Persistent-memory files (READ-ONLY): the memory_recall filter reads these
+      # markdown facts to inject the AI's memory into the prompt each turn.
+      # memory-mcp (below) writes them. ./memory-data is git-ignored — personal
+      # facts, server-only. See README "Memory".
+      - ./memory-data:/memory:ro
     depends_on:
       - ollama
 
@@ -136,6 +141,34 @@ services:
       - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
     depends_on:
       - comfyui
+
+  # memory-mcp — gives assistant a persistent, hand-editable markdown memory
+  # (Claude-style). Mirrors searxng-mcp/comfyui-mcp: streamable-HTTP, LOOPBACK
+  # ONLY (127.0.0.1:9400), host networking so the host-networked open-webui can
+  # reach it. The model calls its save/update/delete/list tools (the write half);
+  # the memory_recall inlet filter reads the same files to auto-recall them into
+  # the prompt (the read half). Runs as 1000:1000 so the files it writes into
+  # ./memory-data stay owned by jacob and hand-editable; ./memory-data is
+  # git-ignored (personal facts, server-only) and bind-mounted read-only into
+  # open-webui at /memory. Built locally (the image: tag lets `docker compose
+  # pull --ignore-buildable` skip it). Never touches Ollama or the LAN.
+  memory-mcp:
+    build: ./memory-mcp
+    image: memory-mcp:local
+    container_name: memory-mcp
+    network_mode: host
+    user: "1000:1000"
+    restart: unless-stopped
+    environment:
+      - MCP_HTTP_HOST=127.0.0.1
+      - MCP_HTTP_PORT=9400
+      - MEMORY_DIR=/data/memory
+    volumes:
+      - ./memory-data:/data/memory
+      # Tool descriptions are prompt engineering and this repo is public, so the
+      # tuned wording is server-only. Absent -> the short in-source fallbacks are
+      # used and the server still starts. See prompts/README.md.
+      - ./prompts:/prompts:ro
 
   homeassistant:
     image: ghcr.io/home-assistant/home-assistant:2026.7.1
