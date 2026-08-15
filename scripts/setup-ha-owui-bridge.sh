@@ -9,7 +9,7 @@
 #   2. mints a dedicated HA long-lived token ("Open WebUI MCP") IF Open WebUI
 #      isn't already wired with a working one
 #   3. adds a bearer-authed `home-assistant` MCP tool to Open WebUI and attaches
-#      it to the gemma4:31b model (leaving its other tools intact)
+#      it to the assistant model (leaving its other tools intact)
 #
 # The dedicated token lives ONLY in Open WebUI's DB (no stray secret files).
 # Reads the HA admin token from $HA_TOKEN or the prometheus container's
@@ -32,6 +32,10 @@ log "ensuring HA mcp_server integration (exposes assist over /api/mcp)..."
 HA_TOKEN="$ADMIN" python3 scripts/ha-owui-bridge-config.py
 
 # --- 2. wire Open WebUI (mint token only if needed) -------------------------
+# The `assistant` model row must exist before we wire tools onto it. Idempotent,
+# so it is safe here even though the other setup script does the same.
+docker cp scripts/openwebui-assistant-model.py open-webui:/tmp/openwebui-assistant-model.py >/dev/null
+docker exec open-webui python3 /tmp/openwebui-assistant-model.py
 docker cp scripts/openwebui-ha-bridge.py open-webui:/tmp/openwebui-ha-bridge.py >/dev/null
 STATE=$(docker exec open-webui python3 /tmp/openwebui-ha-bridge.py --check 2>/dev/null || echo NEEDS_TOKEN)
 
@@ -58,7 +62,7 @@ asyncio.run(main())
 PY
 )
   [ -n "$TOKEN" ] || { log "ERROR: token mint returned empty"; exit 1; }
-  log "wiring Open WebUI (home-assistant tool + gemma4:31b)..."
+  log "wiring Open WebUI (home-assistant tool + assistant)..."
   docker exec -e HA_MCP_TOKEN="$TOKEN" open-webui python3 /tmp/openwebui-ha-bridge.py
   docker restart open-webui >/dev/null
 fi

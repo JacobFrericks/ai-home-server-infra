@@ -19,6 +19,7 @@ this repo itself. No secret ever lives in git.
 | searxng-mcp | `isokoliuk/mcp-searxng:1.11.0` | host, `127.0.0.1:9200` only | MCP server wrapping SearXNG as tools for **both** the Open WebUI chat and the HA voice agent; streamable-HTTP at `/mcp`, loopback-only |
 | comfyui | `mmartial/comfyui-nvidia-docker:ubuntu24_cuda13.1-20260605` | bridge, `127.0.0.1:8188` only | SDXL text-to-image backend for **image generation**; GPU-shared (RTX 3090); loopback-only, no auth; `--normalvram` (free-between-gens). SDXL checkpoint is a manual download |
 | comfyui-mcp | `comfyui-mcp:local` (built from `./comfyui-mcp`) | host, `127.0.0.1:9300` only | MCP server exposing `generate_image` (drives ComfyUI); attached to the **`gemma4:12b`** Open WebUI model; streamable-HTTP at `/mcp`, loopback-only |
+| memory-mcp | `memory-mcp:local` (built from `./memory-mcp`) | host, `127.0.0.1:9400` only | MCP server giving **`assistant`** a persistent, hand-editable **markdown memory** (save/update/delete/list tools); runs as `1000:1000`; writes to git-ignored `./memory-data`; streamable-HTTP at `/mcp`, loopback-only. See **Memory** below |
 | homeassistant | `ghcr.io/home-assistant/home-assistant:2026.7.1` | host, privileged | binds `/run/dbus`, `~/Documents/homeassistant` |
 | piper | `rhasspy/wyoming-piper:2.2.2` | bridge, `:10200` | Wyoming TTS |
 | whisper | `rhasspy/wyoming-whisper:3.5.0` | bridge, `:10300` | Wyoming STT |
@@ -33,15 +34,24 @@ searxng/
   settings.yml.example  # tracked template; real searxng/settings.yml is git-ignored (server-only)
 comfyui-mcp/         # locally-built MCP server for image generation (Dockerfile + server.py)
   workflow_api.json     # SDXL text-to-image graph (API format) — shared by the MCP tool and HA
+memory-mcp/          # locally-built MCP server for persistent memory (Dockerfile + server.py)
+memory-data/         # the memory markdown files (one fact/file + MEMORY.md index) — GIT-IGNORED,
+                     #   server-only, jacob-owned/hand-editable; created by setup-memory.sh
 homeassistant/
   custom_components/comfyui_generator/  # VENDORED HA AI Task integration (pinned; see VENDORED.md)
+  custom_components/wyzeapi/            # VENDORED Wyze integration (pinned; see VENDORED.md)
 scripts/
   setup-image-gen.sh        # idempotent provisioning for image gen (the "start over" button)
   openwebui-image-gen.py    # Open WebUI DB wiring (tool + gemma4:12b model)
   ha-image-gen-config.py    # inject the HA ComfyUI AI Task config entry (root)
   setup-ha-owui-bridge.sh   # idempotent: let Open WebUI control HA (the "start over" button)
   ha-owui-bridge-config.py  # enable HA's mcp_server integration (config-flow API)
-  openwebui-ha-bridge.py    # Open WebUI DB wiring (home-assistant tool + gemma4:31b)
+  openwebui-ha-bridge.py    # Open WebUI DB wiring (home-assistant tool + assistant)
+  setup-memory.sh           # idempotent: give assistant persistent memory (the "start over" button)
+  openwebui-memory.py       # Open WebUI DB wiring (memory tool + prompt on assistant)
+  memory_recall.py          # inlet filter: auto-inject memories into the prompt each turn
+  setup-wyze.sh             # idempotent: install the vendored Wyze integration into HA
+  ha-wyze-logging.py        # quiet the wyzeapi camera logger that leaks AWS creds (root)
   verify-services.sh        # functional PASS/FAIL check of the whole stack
 deploy.sh            # run on the server: git pull -> compose pull -> up -d -> health check
 .github/
@@ -60,9 +70,9 @@ assistant** — get internet access the same way: the model calls a
 `searxng_web_search` tool exposed by the **`searxng-mcp`** MCP server, which
 queries a self-hosted **SearXNG** metasearch instance. No third-party API keys,
 no queries sent to a search-aggregator account, and **no per-chat toggle** — the
-model decides when to search. Only the **`gemma4:31b`** model is wired for this.
+model decides when to search. Only the **`assistant`** model is wired for this.
 
-Data path: `gemma4:31b` (tool call) → `searxng-mcp` (`127.0.0.1:9200/mcp`,
+Data path: `assistant` (tool call) → `searxng-mcp` (`127.0.0.1:9200/mcp`,
 streamable-HTTP) → `searxng` (`127.0.0.1:8888`) → public search engines.
 
 ### SearXNG backend
@@ -88,7 +98,7 @@ path. Config lives in the `open-webui` named volume (`webui.db`); to reproduce:
 1. **Admin → Settings → External Tools** → add server, type *MCP (Streamable
    HTTP)*, URL `http://127.0.0.1:9200/mcp`, auth *None* (stored in the
    `tool_server.connections` config with `info.id: searxng-web`).
-2. **Make it always-on:** the `gemma4:31b` workspace model has the tool set as a
+2. **Make it always-on:** the `assistant` workspace model has the tool set as a
    default (`meta.toolIds: ["server:mcp:searxng-web"]`) so it's attached to every
    chat with no toggle. Native function-calling is Open WebUI's default.
 3. The model's system prompt tells it to search for current / uncertain
@@ -115,7 +125,7 @@ RTX 3090; two front-ends drive the **same** ComfyUI backend:
 1. **Open WebUI chat** — the **`gemma4:12b`** model calls a `generate_image` tool
    exposed by the **`comfyui-mcp`** MCP server (12b writes the prompt / decides
    when to fire; it is the orchestrator and stays warm). 12b is a *dedicated*
-   image model — `gemma4:31b` (chat/voice) is untouched.
+   image model — `assistant` (chat/voice) is untouched.
 2. **Home Assistant** — the **AI Task → Generate Image** platform, via a
    **vendored** copy of the `comfyui_generator` integration
    (`homeassistant/custom_components/`), pointed at the same ComfyUI. HA generates
@@ -177,7 +187,7 @@ the mirror image of web search: instead of HA reaching out to an MCP server, HA
   intents for every Assist-*exposed* entity become MCP tools (`HassTurnOn`,
   `HassMediaPause`, `HassListAddItem`, …).
 - **Open WebUI side:** a bearer-authed `home-assistant` MCP tool server pointed at
-  `http://127.0.0.1:8123/api/mcp`, attached to the **`gemma4:31b`** model (which
+  `http://127.0.0.1:8123/api/mcp`, attached to the **`assistant`** model (which
   keeps its `searxng-web` tool). Auth uses a **dedicated** HA long-lived token
   ("Open WebUI MCP"), minted at setup and stored only in Open WebUI's DB.
 
@@ -197,18 +207,145 @@ smart devices show up automatically once integrated into HA and exposed to Assis
 WebUI isn't already wired, and adds the tool via `scripts/openwebui-ha-bridge.py`.
 Reads the HA admin token from `$HA_TOKEN` or the prometheus `ha_token`.
 
+## Wyze bulbs (legacy — cloud-only, being phased out)
+
+A handful of first-generation **Wyze Bulb (WLPA19)** units, activated 2019. White
+only, with tunable color temperature — the "orange" look is just the warm ~2700K
+end, not RGB. These are **legacy devices slated for replacement by self-hosted /
+locally-controlled bulbs**; this integration keeps them working in the meantime.
+
+**Why they don't just show up in HA:** Wyze bulbs speak no local protocol — no
+mDNS, no SSDP, no Matter. Sitting on the LAN is not enough; HA's auto-discovery
+has nothing to find. The only route is Wyze's **unofficial cloud API**, via the
+vendored `wyzeapi` custom integration (`iot_class: cloud_polling`).
+
+Consequences worth accepting up front:
+
+- **Not local control.** Every on/off round-trips through Wyze's servers. If
+  Wyze's cloud is down, the bulbs are unavailable in HA. That is expected
+  behavior for these devices, not a fault in this stack.
+- **Unofficial API.** Wyze can revoke access at any time; upstream has been
+  throttled before. This is the reason for the migration plan, not a surprise.
+- Bulbs land as `light` entities exposing brightness + color temperature
+  (`ColorMode.COLOR_TEMP`, max 6500K). Once exposed to Assist they are also
+  voice/chat controllable via the OWUI→HA bridge above, like any other entity.
+
+### Setup
+
+```
+./scripts/setup-wyze.sh              # install the component + restart HA (re-runnable)
+```
+
+Then, **once, by hand in the HA UI**: Settings → Devices & Services → Add
+Integration → "Wyze", and enter Wyze email, password, Key ID, and API Key (keys
+are generated at <https://developer-api-console.wyze.com/>).
+
+This last step is deliberately **not** scripted. This repository is public, and
+the integration needs full Wyze account credentials; entering them through the
+config flow keeps them in HA's `.storage` only, with nothing sensitive on disk
+here. `setup-wyze.sh` therefore does no credential handling at all — it detects
+whether a config entry already exists and prints instructions if not.
+
+HA installs the integration's Python requirement (`wyzeapy`) lazily into
+`/config/deps` the first time the config flow runs, so the container needs
+outbound internet on that first load.
+
+### Camera logger is silenced on purpose (credential leak)
+
+`setup-wyze.sh` adds `custom_components.wyzeapi.camera: error` to the `logger:`
+block in `configuration.yaml` (via `scripts/ha-wyze-logging.py`, idempotent).
+
+This is **not** cosmetic noise-trimming. The camera platform logs the whole
+exception when a camera's `config_fetch()` fails — routine for any offline
+camera — and that exception message embeds Wyze's full `get_stream_info`
+response, which contains **live AWS credentials**: `X-Amz-Security-Token`,
+presigned Kinesis Video URLs, a JWT `auth_token`, and TURN usernames/passwords.
+Unsuppressed, those get written to `home-assistant.log` *and* shipped to Loki by
+Alloy, where they long outlive their 30-minute expiry.
+
+`error` keeps that module's two genuine error paths visible (JSON-decode and
+`run_loop` failures, which log only benign text). **Never set this logger to
+`debug`** — its debug statements dump the same config dict and ICE credentials.
+
+Note the integration adopts the *whole* Wyze account, not just bulbs: cameras,
+sirens, plugs, and energy sensors all appear. Offline cameras log a suppressed
+warning on each restart; `wyzeapy` also trips HA's "blocking call to
+`load_default_certs`" warning during login (an upstream event-loop issue, cosmetic).
+
+## Memory (persistent, Claude-style)
+
+The **Open WebUI chat** (`assistant`) has a persistent long-term memory: it
+recalls what it knows about you at the start of every conversation and saves
+salient facts as it goes. Memories are **plain markdown files** — one fact per
+file with frontmatter (`name`/`description`/`type`) plus a `MEMORY.md` index —
+so they are greppable, hand-editable, and backed up as text. Scope is the Open
+WebUI chat only (not the voice assistant).
+
+```
+chat starts
+   │  RECALL  memory_recall inlet filter reads ./memory-data and injects a
+   │          <memory_context> block into the system prompt (no tool call)
+model reasons — it already "knows" you
+   │  SAVE    the model calls the memory-mcp save_memory tool when a fact is
+   │          worth keeping (or on "remember …")
+./memory-data/<slug>.md written (+ MEMORY.md re-indexed)
+```
+
+- **Write half — `memory-mcp`** (loopback `127.0.0.1:9400`): exposes
+  `save_memory` / `list_memories` / `update_memory` / `delete_memory`, attached
+  to the `assistant` model as an always-on tool (`meta.toolIds` gains
+  `server:mcp:memory`, alongside `searxng-web` / `home-assistant`). It runs as
+  `1000:1000` so the files stay jacob-owned and hand-editable.
+- **Read half — `memory_recall` filter**: an Open WebUI inlet Function **scoped
+  to `assistant`** that loads all memory files and prepends them to the system
+  prompt each real turn (it skips internal title/tag/follow-up generations). It
+  loads the whole set — fine while small; swap in an embedding search over the
+  same files if it ever outgrows the context window. Scoping is why
+  `setup-memory.sh` passes `--models assistant` to
+  `openwebui-install-filter.py`: that clears `is_global` and puts the filter in
+  the model's `meta.filterIds`, so the other models never pay the context cost
+  (and personal facts stay out of their prompts). Filters that *should* run
+  everywhere, like `render_tool_images`, are installed with no `--models`.
+- **Prompt**: `assistant`'s system prompt tells it to save durable facts
+  conservatively and obey "remember …" (see `scripts/openwebui-memory.py`).
+- **Privacy**: `./memory-data` is **git-ignored** — personal facts never land in
+  this public repo. The MCP server, filter, and setup script are tracked; the
+  memory *content* is server-only (same posture as `searxng/settings.yml`).
+- **Native Open WebUI memory is intentionally left OFF** (the model's `memory`
+  feature isn't enabled) so there's no double injection.
+
+### One-command setup / "start over"
+
+```
+./deploy.sh                    # bring the stack up (services)
+./scripts/setup-memory.sh      # build memory-mcp + wire OWUI (re-runnable; no sudo)
+```
+
+`setup-memory.sh` is idempotent: it creates `./memory-data`, builds+starts
+`memory-mcp`, registers the memory tool + prompt on `assistant`
+(`scripts/openwebui-memory.py`), and installs the `memory_recall` filter
+(`scripts/memory_recall.py` via `scripts/openwebui-install-filter.py`).
+
 ### VRAM: free-between-gens (why SDXL and gemma can coexist)
 
-The 24 GB card can't hold `gemma4:31b` (~23 GB) **and** SDXL at once — which is
-why the image model is **`gemma4:12b`** (~10 GB). During a generation, 12b +
-SDXL ≈ 20 GB fit together; **`comfyui-mcp` POSTs `/free` after every image** so
-SDXL releases the GPU immediately, leaving the ~10-20 s generation the only
-window of contention. ComfyUI's default **DynamicVRAM** also unloads models to
-CPU after each run (we do **not** pass `--highvram`), so even the HA path — which
-doesn't call `/free` — auto-releases the GPU after generating. Caveat: an
-HA-triggered generation is still a second trigger for an SDXL *load* — if it
-fires while `gemma4:31b` is resident, SDXL won't fit and ComfyUI CPU-offloads
-(slow, not a crash). Avoid scheduling HA image automations during heavy voice use.
+The 24 GB card can't hold the chat model **and** SDXL at once — which is why the
+image model is **`gemma4:12b`** (~10 GB). During a generation, 12b + SDXL ≈ 20 GB
+fit together; **`comfyui-mcp` POSTs `/free` after every image** so SDXL releases
+the GPU immediately, leaving the ~10-20 s generation the only window of
+contention. ComfyUI's default **DynamicVRAM** also unloads models to CPU after
+each run (we do **not** pass `--highvram`), so even the HA path — which doesn't
+call `/free` — auto-releases the GPU after generating. Caveat: an HA-triggered
+generation is still a second trigger for an SDXL *load* — if it fires while the
+chat model is resident, SDXL won't fit and ComfyUI CPU-offloads (slow, not a
+crash). Avoid scheduling HA image automations during heavy voice use.
+
+Measured footprints (`ollama ps`), which is why `assistant` is backed by
+`gemma4:26b` rather than a larger model: **26b at 65,536 context = 17 GB, 100% on
+GPU, ~4.3 GB free**, versus **31b at 32,768 context = 21 GB with ~9% spilled to
+CPU and <1 GB free**. 26b's embedding length is 2,816 vs 31b's 5,376, so its KV
+cache costs roughly half per token — it fits a larger context in less memory.
+Even so, 17 GB leaves no room for a co-resident SDXL, so the free-between-gens
+behaviour above still does the real work.
 
 ### SDXL checkpoint (`setup-image-gen.sh` step 2)
 
@@ -295,6 +432,13 @@ service list, dashboards, alert rules, and secrets setup.
 - Image-gen provisioning (model pull, SDXL checkpoint, Open WebUI + HA wiring) is
   **not** part of the weekly `deploy.sh`, but it IS codified + idempotent in
   `scripts/setup-image-gen.sh` — run it once (or to rebuild). See "Image generation".
+- Memory provisioning (Open WebUI tool + prompt + recall filter) is likewise not
+  part of `deploy.sh` but is codified + idempotent in `scripts/setup-memory.sh` —
+  run it once (or to rebuild). See "Memory". The memory *content* (`memory-data/`)
+  is server-only and git-ignored, so it is never touched by a redeploy.
+- Wyze integration provisioning is codified + idempotent in `scripts/setup-wyze.sh`,
+  but the **config entry itself is manual on purpose** — the credentials must not
+  be scripted into a public repo. See "Wyze bulbs".
 - Remote/external access (future: WireGuard).
 
 ## Plex (containerized — cut over 2026-07-10)

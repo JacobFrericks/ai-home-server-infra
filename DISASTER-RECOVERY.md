@@ -19,7 +19,7 @@ for the live design; nothing here changes it.
 | Open WebUI users, chat history, uploaded images, the config DB | ❌ | `open-webui` volume (restore, or lost) |
 | `WEBUI_SECRET_KEY`, `OWUI_USER_ID`, `OWUI_PUBLIC_URL` | ❌ | `.env` (from `.env.example`) |
 | SearXNG secret, monitoring secrets, HA token | ❌ | `searxng/settings.yml`, `monitoring/.env`, `monitoring/prometheus/ha_token` |
-| Other Ollama models (gemma4:31b, …) | ❌ (large) | `ollama pull <model>` |
+| Other Ollama models (gemma4:26b, gemma4:31b, …) | ❌ (large) | `ollama pull <model>` |
 
 Server-only (git-ignored) files that must exist before things work: `.env`,
 `searxng/settings.yml`, `monitoring/.env`, `monitoring/prometheus/ha_token`.
@@ -88,7 +88,7 @@ Do these **in order** — steps 5–7 are the bootstrap dependencies:
    ./scripts/setup-image-gen.sh
    ./scripts/setup-ha-owui-bridge.sh
    ```
-8. **Re-pull any other models** you use: `ollama pull gemma4:31b` (chat/voice), etc.
+8. **Re-pull any other models** you use: `ollama pull gemma4:26b` (backs the `assistant` model), etc.
 9. **Verify:** `./scripts/verify-services.sh`.
 
 Accepted data loss on this path: **chat history and uploaded images**. Everything

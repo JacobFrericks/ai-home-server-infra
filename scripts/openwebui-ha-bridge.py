@@ -9,7 +9,7 @@ Run INSIDE the open-webui container (the DB lives in its volume):
 Adds:
   * a `home-assistant` MCP tool server (streamable-HTTP, HA's /api/mcp,
     bearer-authenticated with a dedicated HA long-lived token)
-  * attaches `server:mcp:home-assistant` to the existing `gemma4:31b` workspace
+  * attaches `server:mcp:home-assistant` to the existing `assistant` workspace
     model WITHOUT disturbing its other tools (e.g. searxng-web).
 Mirrors openwebui-image-gen.py. See README "Home Assistant control".
 
@@ -17,7 +17,7 @@ Modes:
   (default)   ensure wiring; requires $HA_MCP_TOKEN if the connection is missing
               or has an empty key.
   --check     print "WIRED" if the connection (with a non-empty bearer key) and
-              the gemma4:31b toolId are both present, else "NEEDS_TOKEN".
+              the assistant toolId are both present, else "NEEDS_TOKEN".
               Never writes. Used by setup-ha-owui-bridge.sh to decide whether to
               mint a fresh token.
 """
@@ -40,7 +40,7 @@ def ha_conn(conns):
 
 
 def model_toolids(cur):
-    m = cur.execute("select meta from model where id='gemma4:31b'").fetchone()
+    m = cur.execute("select meta from model where id='assistant'").fetchone()
     if not (m and m[0]):
         return None
     return (json.loads(m[0]).get("toolIds") or [])
@@ -96,21 +96,21 @@ else:
                     ("tool_server.connections", json.dumps(conns), int(time.time())))
     print("tool_server.connections: added home-assistant (now %d)" % len(conns))
 
-# --- attach tool to gemma4:31b (preserve other toolIds) ----------------------
-m = cur.execute("select meta from model where id='gemma4:31b'").fetchone()
+# --- attach tool to assistant (preserve other toolIds) ----------------------
+m = cur.execute("select meta from model where id='assistant'").fetchone()
 if not (m and m[0]):
-    sys.exit("model gemma4:31b not found — run the base Open WebUI model setup first")
+    sys.exit("model assistant not found — run the base Open WebUI model setup first")
 meta = json.loads(m[0])
 tids = meta.get("toolIds") or []
 if "server:mcp:home-assistant" in tids:
-    print("gemma4:31b: home-assistant tool already attached")
+    print("assistant: home-assistant tool already attached")
 else:
     tids.append("server:mcp:home-assistant")
     meta["toolIds"] = tids
     meta.setdefault("capabilities", {})["builtin_tools"] = True
-    cur.execute("update model set meta=?, updated_at=? where id='gemma4:31b'",
+    cur.execute("update model set meta=?, updated_at=? where id='assistant'",
                 (json.dumps(meta), int(time.time())))
-    print("gemma4:31b: attached home-assistant; toolIds now", tids)
+    print("assistant: attached home-assistant; toolIds now", tids)
 
 c.commit()
 c.close()
