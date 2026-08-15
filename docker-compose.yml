@@ -5,7 +5,12 @@ services:
     network_mode: host
     restart: unless-stopped
     environment:
-      - OLLAMA_HOST=127.0.0.1:11434
+      # 0.0.0.0 so in-cluster pods can reach it via the node IP during the
+      # migration. Safe because ollama is a HOST-NETWORK container: its socket
+      # is an ordinary host socket, so ufw filters it normally (unlike a
+      # bridge-published port, which traverses DOCKER-USER and bypasses ufw).
+      # ufw allows 11434 from 10.42.0.0/16 only -- never the LAN.
+      - OLLAMA_HOST=0.0.0.0:11434
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
