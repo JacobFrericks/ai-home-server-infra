@@ -22,79 +22,9 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+  # searxng-mcp: MIGRATED TO k3s (2026-08-14). Manifests live in the
+  # ai-home-server-k8s repo under workloads/web-tier.
 
-  open-webui:
-    image: ghcr.io/open-webui/open-webui:v0.11.0
-    container_name: open-webui
-    network_mode: host
-    restart: unless-stopped
-    environment:
-      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
-      - ENABLE_SIGNUP=false
-      - OLLAMA_BASE_URL=http://127.0.0.1:11434
-      # Web search is via the searxng-mcp MCP server (see README "Web search via
-      # MCP"), NOT Open WebUI's native web search — that is disabled at runtime
-      # (web.search.enable=false in the open-webui DB). Set here so a fresh
-      # install also starts with the native toggle off.
-      - ENABLE_WEB_SEARCH=false
-    volumes:
-      - open-webui:/app/backend/data
-      # Persistent-memory files (READ-ONLY): the memory_recall filter reads these
-      # markdown facts to inject the AI's memory into the prompt each turn.
-      # memory-mcp (below) writes them. ./memory-data is git-ignored — personal
-      # facts, server-only. See README "Memory".
-      - ./memory-data:/memory:ro
-    depends_on:
-      - ollama
-
-  # Self-hosted SearXNG metasearch — gives the local LLMs web access with no API
-  # keys and no queries leaving to a third-party aggregator. Published on LOOPBACK
-  # only (127.0.0.1:8888) so it never touches the LAN; only outbound traffic is
-  # SearXNG -> public search engines. Config lives in ./searxng: settings.yml is
-  # git-ignored (holds a real secret_key, server-only) and generated from
-  # settings.yml.example. The JSON output format MUST be enabled in settings.yml
-  # or open-webui gets HTTP 403 from the search API.
-  searxng:
-    image: searxng/searxng:2026.7.11-62a1ab7ed
-    container_name: searxng
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8888:8080"
-    volumes:
-      - ./searxng:/etc/searxng:rw
-    environment:
-      - SEARXNG_BASE_URL=http://127.0.0.1:8888/
-
-  # Web-search MCP server backing the Home Assistant voice Assist agent. Wraps
-  # the SearXNG instance above as an MCP tool. Runs in streamable-HTTP mode
-  # (HA's MCP Client integration supports streamable-HTTP first, SSE fallback)
-  # and binds LOOPBACK ONLY (MCP_HTTP_HOST=127.0.0.1) — never on the LAN, no ufw
-  # rule. host networking lets it both reach SearXNG at 127.0.0.1:8888 and be
-  # reachable by the host-networked homeassistant container at 127.0.0.1:9200.
-  # HA connects to it at http://127.0.0.1:9200/mcp (see README "Voice web search").
-  searxng-mcp:
-    image: isokoliuk/mcp-searxng:1.15.0
-    container_name: searxng-mcp
-    network_mode: host
-    restart: unless-stopped
-    environment:
-      - SEARXNG_URL=http://127.0.0.1:8888
-      - MCP_HTTP_HOST=127.0.0.1
-      - MCP_HTTP_PORT=9200
-    depends_on:
-      - searxng
-
-  # ComfyUI — local SDXL text-to-image backend for the image-generation feature.
-  # Published on LOOPBACK ONLY (127.0.0.1:8188), like SearXNG, so it never touches
-  # the LAN; both front-ends reach it over loopback — open-webui via comfyui-mcp
-  # below, and Home Assistant's AI Task integration (ComfyUI-Home-Assistant, a
-  # runtime custom_component — see README). Shares the RTX 3090 with Ollama/Plex,
-  # so VRAM strategy is "free-between-gens". ComfyUI's default DynamicVRAM already
-  # UNLOADS models to CPU after each run (no flag needed — --highvram would be the
-  # opt-in to pin them, which we do NOT set), so SDXL (~8-10 GB) only holds the GPU
-  # during the ~10-20s generation window; comfyui-mcp also POSTs /free as a belt-
-  # and-braces release. The SDXL checkpoint (sd_xl_base_1.0.safetensors) is a
-  # MANUAL download into the comfyui-data volume at ComfyUI/models/checkpoints.
   comfyui:
     image: mmartial/comfyui-nvidia-docker:ubuntu24_cuda13.1-20260605
     container_name: comfyui
@@ -132,7 +62,11 @@ services:
     restart: unless-stopped
     environment:
       - COMFYUI_URL=http://127.0.0.1:8188
-      - MCP_HTTP_HOST=127.0.0.1
+      # 0.0.0.0 so the in-cluster Open WebUI can reach it via the node IP while
+      # ComfyUI (and therefore this shim) remain on Compose. Safe because this is a
+      # HOST-NETWORK container -- ufw filters its socket normally. ufw allows 9300
+      # from 10.42.0.0/16 only.
+      - MCP_HTTP_HOST=0.0.0.0
       - MCP_HTTP_PORT=9300
       # Delivery via Open WebUI's files API: generated images are uploaded and
       # returned as an ABSOLUTE-URL markdown image so they render in both the
@@ -140,40 +74,18 @@ services:
       # Conduit). Upload auth is a JWT the MCP mints from WEBUI_SECRET_KEY.
       # OWUI_PUBLIC_URL must match the origin clients use to reach Open WebUI
       # (same-origin is required for the mobile client to attach its auth token).
-      - OWUI_UPLOAD_URL=http://127.0.0.1:8080
+      # Uploads go to the k3s Open WebUI Service ClusterIP: plain HTTP, so no
+      # internal-CA trust problem, and the host can reach ClusterIPs via Cilium.
+      # OWUI_PUBLIC_URL below stays http://192.168.86.63:8080 -- the address
+      # clients actually fetch images from, preserved across the migration.
+      - OWUI_UPLOAD_URL=http://10.43.59.223:8080
       - OWUI_PUBLIC_URL=${OWUI_PUBLIC_URL}
       - OWUI_USER_ID=${OWUI_USER_ID}
       - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
     depends_on:
       - comfyui
-
-  # memory-mcp — gives assistant a persistent, hand-editable markdown memory
-  # (Claude-style). Mirrors searxng-mcp/comfyui-mcp: streamable-HTTP, LOOPBACK
-  # ONLY (127.0.0.1:9400), host networking so the host-networked open-webui can
-  # reach it. The model calls its save/update/delete/list tools (the write half);
-  # the memory_recall inlet filter reads the same files to auto-recall them into
-  # the prompt (the read half). Runs as 1000:1000 so the files it writes into
-  # ./memory-data stay owned by jacob and hand-editable; ./memory-data is
-  # git-ignored (personal facts, server-only) and bind-mounted read-only into
-  # open-webui at /memory. Built locally (the image: tag lets `docker compose
-  # pull --ignore-buildable` skip it). Never touches Ollama or the LAN.
-  memory-mcp:
-    build: ./memory-mcp
-    image: memory-mcp:local
-    container_name: memory-mcp
-    network_mode: host
-    user: "1000:1000"
-    restart: unless-stopped
-    environment:
-      - MCP_HTTP_HOST=127.0.0.1
-      - MCP_HTTP_PORT=9400
-      - MEMORY_DIR=/data/memory
-    volumes:
-      - ./memory-data:/data/memory
-      # Tool descriptions are prompt engineering and this repo is public, so the
-      # tuned wording is server-only. Absent -> the short in-source fallbacks are
-      # used and the server still starts. See prompts/README.md.
-      - ./prompts:/prompts:ro
+  # memory-mcp: MIGRATED TO k3s (2026-08-14). Manifests live in the
+  # ai-home-server-k8s repo under workloads/web-tier.
 
   homeassistant:
     image: ghcr.io/home-assistant/home-assistant:2026.7.1
@@ -242,8 +154,7 @@ services:
               capabilities: [gpu]
 
 volumes:
-  open-webui:
-    external: true
-  # ComfyUI run dir (/comfy/mnt): ComfyUI source + venv, plus the models tree
-  # (incl. the manually-downloaded SDXL checkpoint) under ComfyUI/models.
+  # open-webui: MIGRATED TO k3s (2026-08-14). Manifests live in the
+  # ai-home-server-k8s repo under workloads/web-tier.
+
   comfyui-data:

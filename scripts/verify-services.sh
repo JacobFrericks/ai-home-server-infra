@@ -8,6 +8,11 @@
 # for reachability + checkpoint but no image is generated (that would load SDXL).
 set -uo pipefail
 
+# Half the stack now runs on k3s, so this script calls kubectl. Under cron (or any
+# non-login shell) there is no KUBECONFIG in the environment and every kubectl check
+# would fail silently, reporting a healthy service as broken.
+export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/config}
+
 STACK_DIR="/home/jacob/docker/ai-stack"
 cd "$STACK_DIR" 2>/dev/null || { echo "cannot cd $STACK_DIR"; exit 2; }
 
@@ -85,9 +90,9 @@ fi
 # =========================================================================
 # 3. Open WebUI  (health + db + config; model list needs auth, skipped)
 # =========================================================================
-ow_h=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8080/health)
-ow_db=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8080/health/db)
-ow_cfg=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8080/api/config)
+ow_h=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://192.168.86.63:8080/health)
+ow_db=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://192.168.86.63:8080/health/db)
+ow_cfg=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://192.168.86.63:8080/api/config)
 if [ "$ow_h" = 200 ] && [ "$ow_db" = 200 ] && [ "$ow_cfg" = 200 ]; then
   record "Open WebUI" PASS "health=200 db=200 api/config=200"
 else
@@ -97,12 +102,12 @@ fi
 # =========================================================================
 # 4. SearXNG  (real search; try JSON, fall back to HTML)
 # =========================================================================
-sx=$(curl -s --max-time 20 "http://127.0.0.1:8888/search?q=home+assistant&format=json")
+sx=$(curl -s --max-time 20 "http://10.43.32.94:8080/search?q=home+assistant&format=json")
 sxn=$(printf '%s' "$sx" | python3 -c 'import sys,json
 try: print(len(json.load(sys.stdin).get("results",[])))
 except: print("NOJSON")')
 if [ "$sxn" = NOJSON ] || [ -z "$sxn" ]; then
-  sxh=$(curl -s --max-time 20 "http://127.0.0.1:8888/search?q=home+assistant")
+  sxh=$(curl -s --max-time 20 "http://10.43.32.94:8080/search?q=home+assistant")
   sxn=$(printf '%s' "$sxh" | grep -oc 'class="result' || true)
   mode="html"
 else
@@ -119,7 +124,7 @@ fi
 # =========================================================================
 mcp=$(python3 - <<'PY'
 import json,urllib.request
-BASE="http://127.0.0.1:9200/mcp"
+BASE="http://10.43.36.60:9200/mcp"
 HDR={"Content-Type":"application/json","Accept":"application/json, text/event-stream"}
 def parse(body,ct):
     body=body.decode("utf-8","replace")
@@ -222,7 +227,7 @@ record "comfyui-mcp" "${cmcp%%|*}" "${cmcp#*|}"
 #     installed (active + global). No memory is written. See README "Memory".
 memmcp=$(python3 - <<'PY'
 import json,urllib.request
-BASE="http://127.0.0.1:9400/mcp"
+BASE="http://10.43.96.211:9400/mcp"
 HDR={"Content-Type":"application/json","Accept":"application/json, text/event-stream"}
 def parse(body,ct):
     body=body.decode("utf-8","replace")
@@ -256,7 +261,7 @@ PY
 )
 record "memory-mcp" "${memmcp%%|*}" "${memmcp#*|}"
 
-memwire=$(docker exec -i open-webui python3 - <<'PY' 2>/dev/null
+memwire=$(kubectl -n ai-stack exec -i deploy/open-webui -- python3 - <<'PY' 2>/dev/null
 import sqlite3, json
 c=sqlite3.connect("/app/backend/data/webui.db")
 r=c.execute("select meta from model where id='assistant'").fetchone()
@@ -296,8 +301,8 @@ except: print("ERR")')
 else
   ha_mcp="ERR"
 fi
-owui_b=$(docker exec open-webui python3 /tmp/openwebui-ha-bridge.py --check 2>/dev/null \
-  || docker exec -i open-webui python3 - <<'PY' 2>/dev/null
+owui_b=$(kubectl -n ai-stack exec deploy/open-webui -- python3 /tmp/openwebui-ha-bridge.py --check 2>/dev/null \
+  || kubectl -n ai-stack exec -i deploy/open-webui -- python3 - <<'PY' 2>/dev/null
 import sqlite3,json
 try:
     db=sqlite3.connect("/app/backend/data/webui.db")
