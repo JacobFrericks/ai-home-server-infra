@@ -20,6 +20,8 @@ STACK_DIR="/home/jacob/docker/ai-stack"
 # resolve *.svc.cluster.local, but a baked-in ClusterIP would silently go stale if
 # a Service were ever recreated. The host reaches ClusterIPs via Cilium.
 clusterip() { kubectl -n ai-stack get svc "$1" -o jsonpath='{.spec.clusterIP}' 2>/dev/null; }
+clusterip_ns() { kubectl -n "$1" get svc "$2" -o jsonpath='{.spec.clusterIP}' 2>/dev/null; }
+export GRAFANA_EP="$(clusterip_ns monitoring kube-prometheus-stack-grafana):3000"
 export OLLAMA_EP="http://$(clusterip ollama):11434"
 export COMFY_EP="http://$(clusterip comfyui):8188"
 export COMFYMCP_EP="http://$(clusterip comfyui-mcp):9300/mcp"
@@ -35,13 +37,12 @@ record() { # name | PASS/FAIL | detail
 
 # ---- secrets loaded at runtime, never echoed ----
 HA_TOKEN=""
-_tmp=$(mktemp)
-if docker cp prometheus:/etc/prometheus/ha_token "$_tmp" >/dev/null 2>&1; then
-  HA_TOKEN=$(tr -d '\r\n' < "$_tmp")
-fi
-rm -f "$_tmp"
-PLEX_TOKEN=$(grep -E '^PLEX_TOKEN=' monitoring/.env 2>/dev/null | cut -d= -f2- | tr -d '\r')
-GRAFANA_PW=$(grep -E '^GRAFANA_ADMIN_PASSWORD=' monitoring/.env 2>/dev/null | cut -d= -f2- | tr -d '\r')
+# Post-migration these live in Kubernetes Secrets, not in a Compose container or
+# monitoring/.env -- both of which disappeared with the monitoring project.
+# Values are never echoed.
+HA_TOKEN=$(kubectl -n monitoring get secret ha-scrape-token -o jsonpath='{.data.ha_token}' 2>/dev/null | base64 -d 2>/dev/null | tr -d '\r\n')
+PLEX_TOKEN=$(kubectl -n monitoring get secret plex-exporter -o jsonpath='{.data.PLEX_TOKEN}' 2>/dev/null | base64 -d 2>/dev/null | tr -d '\r\n')
+GRAFANA_PW=$(kubectl -n monitoring get secret grafana-admin -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d 2>/dev/null | tr -d '\r\n')
 
 # =========================================================================
 # 1. Home Assistant
@@ -417,7 +418,7 @@ fi
 # =========================================================================
 # 8. Monitoring: Prometheus targets + Grafana datasource health (covers Loki)
 # =========================================================================
-PROM_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' prometheus 2>/dev/null)
+PROM_IP=$(clusterip_ns monitoring kube-prometheus-stack-prometheus)
 if [ -n "$PROM_IP" ]; then
   ptar=$(curl -s --max-time 15 "http://$PROM_IP:9090/api/v1/targets")
   read -r p_up p_tot < <(printf '%s' "$ptar" | python3 -c 'import sys,json
@@ -433,11 +434,11 @@ else
   record "Prometheus" FAIL "could not resolve container IP"
 fi
 
-gh=$(curl -s --max-time 10 http://127.0.0.1:3000/api/health | python3 -c 'import sys,json
+gh=$(curl -s --max-time 10 http://${GRAFANA_EP}/api/health | python3 -c 'import sys,json
 try: print(json.load(sys.stdin).get("database",""))
 except: print("ERR")')
 if [ -n "$GRAFANA_PW" ]; then
-  dsres=$(curl -s --max-time 20 -u "admin:$GRAFANA_PW" http://127.0.0.1:3000/api/datasources | python3 -c 'import sys,json
+  dsres=$(curl -s --max-time 20 -u "admin:$GRAFANA_PW" http://${GRAFANA_EP}/api/datasources | python3 -c 'import sys,json
 try:
     for d in json.load(sys.stdin): print(d["uid"],d["name"])
 except: pass')
@@ -445,7 +446,7 @@ except: pass')
   while read -r uid name; do
     [ -z "$uid" ] && continue
     tot=$((tot+1))
-    st=$(curl -s --max-time 20 -u "admin:$GRAFANA_PW" "http://127.0.0.1:3000/api/datasources/uid/$uid/health" | python3 -c 'import sys,json
+    st=$(curl -s --max-time 20 -u "admin:$GRAFANA_PW" "http://${GRAFANA_EP}/api/datasources/uid/$uid/health" | python3 -c 'import sys,json
 try: print(json.load(sys.stdin).get("status",""))
 except: print("ERR")')
     [ "$st" = OK ] && ok=$((ok+1))

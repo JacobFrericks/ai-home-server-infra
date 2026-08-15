@@ -1,3 +1,53 @@
+> # ⚠️ DECOMMISSIONED AS A COMPOSE PROJECT — 2026-08-15
+>
+> **The whole monitoring stack now runs on k3s.** `monitoring/docker-compose.yml`
+> is deleted, and `docker compose ls` shows exactly one project (`ai-stack`, four
+> services). Everything below this box describes how it *used to* run and is kept
+> as the historical record the Kubernetes manifests were ported from.
+>
+> Manifests live in the private `ai-home-server-k8s` repo:
+>
+> | was (Compose) | now (k3s) |
+> |---|---|
+> | prometheus, grafana | `apps/kube-prometheus-stack.yaml` (chart 88.3.0) |
+> | loki, alloy | `workloads/monitoring/{loki,alloy}.yaml` |
+> | node-exporter, cadvisor, nvidia-gpu-exporter | `workloads/monitoring/exporters-node.yaml` (namespace `monitoring-node`) |
+> | blackbox-exporter, plex-exporter | `workloads/monitoring/exporters-app.yaml` |
+> | the 7 Grafana dashboards | `workloads/monitoring/dashboards/*.yaml` (sidecar ConfigMaps) |
+> | Grafana alerting | inline under `grafana.alerting` in the chart values |
+>
+> **Grafana is still at `http://<server>:3000`** — preserved with Service
+> `externalIPs`, so bookmarks and the Home Assistant alert webhook needed no
+> change. Note there is no host socket on :3000 any more; Cilium serves it in
+> eBPF, so `ss -tlnp` shows nothing even though the port answers.
+>
+> Prometheus went from **10/10 targets to 19/19**: the cluster itself
+> (apiserver, kubelet, coredns, kube-state-metrics) is now visible where it
+> simply was not before.
+>
+> ### What is still kept in this directory, and why
+>
+> * **`.env`** (git-ignored) — the plaintext ORIGIN of the sealed secrets
+>   `GRAFANA_ADMIN_PASSWORD` and `PLEX_TOKEN`. Nothing reads it at runtime now.
+> * **`prometheus/ha_token`** — likewise; now sealed as `ha-scrape-token`.
+> * The config files (`prometheus.yml`, `loki/loki-config.yml`,
+>   `alloy/config.alloy`, `blackbox/blackbox.yml`, `grafana/provisioning/`) are
+>   the sources those manifests were ported from. They are no longer live.
+>
+> ### Cold archive — the Docker volumes are deliberately NOT deleted
+>
+> * **`monitoring_prometheus-data`** — 2.5 GB of TSDB. The new Prometheus started
+>   **empty by decision**, so this is the only copy of pre-migration metric
+>   history. To read it, mount it into a throwaway `prom/prometheus:v3.13.1`
+>   with `--storage.tsdb.path=/prometheus` on a spare port.
+> * **`monitoring_loki-data`** — Loki's contents *were* migrated into the k3s PVC
+>   (21 days of history verified end to end); this is the rollback copy.
+> * **`monitoring_grafana-data`** — rollback copy. Note the k3s Grafana holds no
+>   unique state: dashboards, datasources and alerting are all provisioned from
+>   git, which was verified by deleting its PVC and watching everything rebuild.
+
+---
+
 # Monitoring stack (Prometheus + Loki + Grafana)
 
 A local observability stack for the home server: host + GPU + per-container
