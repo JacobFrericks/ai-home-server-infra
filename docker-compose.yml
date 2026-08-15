@@ -1,91 +1,19 @@
 services:
-  ollama:
-    image: ollama/ollama:0.32.9
-    container_name: ollama
-    network_mode: host
-    restart: unless-stopped
-    environment:
-      # 0.0.0.0 so in-cluster pods can reach it via the node IP during the
-      # migration. Safe because ollama is a HOST-NETWORK container: its socket
-      # is an ordinary host socket, so ufw filters it normally (unlike a
-      # bridge-published port, which traverses DOCKER-USER and bypasses ufw).
-      # ufw allows 11434 from 10.42.0.0/16 only -- never the LAN.
-      - OLLAMA_HOST=0.0.0.0:11434
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    volumes:
-      - /usr/share/ollama/.ollama:/root/.ollama
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-  # searxng-mcp: MIGRATED TO k3s (2026-08-14). Manifests live in the
-  # ai-home-server-k8s repo under workloads/web-tier.
-
-  comfyui:
-    image: mmartial/comfyui-nvidia-docker:ubuntu24_cuda13.1-20260605
-    container_name: comfyui
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8188:8188"
-    environment:
-      - WANTED_UID=1000
-      - WANTED_GID=1000
-      - SECURITY_LEVEL=normal
-    volumes:
-      # /comfy/mnt is the image's run dir: ComfyUI source, venv, and (no
-      # BASE_DIRECTORY set) the models/input/output tree under ComfyUI/.
-      - comfyui-data:/comfy/mnt
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-
-  # comfyui-mcp — MCP server exposing a `generate_image` tool that drives ComfyUI
-  # above. Mirrors searxng-mcp exactly: streamable-HTTP, LOOPBACK ONLY
-  # (127.0.0.1:9300), host networking so it reaches ComfyUI at 127.0.0.1:8188 and
-  # is reachable by the host-networked open-webui. Attached to the gemma4:12b
-  # workspace model in Open WebUI as an always-on tool (runtime — see README).
-  # Built locally (no upstream image); the local image: tag lets `docker compose
-  # pull --ignore-buildable` skip it. Never touches Ollama.
-  comfyui-mcp:
-    build: ./comfyui-mcp
-    image: comfyui-mcp:local
-    container_name: comfyui-mcp
-    network_mode: host
-    restart: unless-stopped
-    environment:
-      - COMFYUI_URL=http://127.0.0.1:8188
-      # 0.0.0.0 so the in-cluster Open WebUI can reach it via the node IP while
-      # ComfyUI (and therefore this shim) remain on Compose. Safe because this is a
-      # HOST-NETWORK container -- ufw filters its socket normally. ufw allows 9300
-      # from 10.42.0.0/16 only.
-      - MCP_HTTP_HOST=0.0.0.0
-      - MCP_HTTP_PORT=9300
-      # Delivery via Open WebUI's files API: generated images are uploaded and
-      # returned as an ABSOLUTE-URL markdown image so they render in both the
-      # browser AND the Conduit mobile client (a relative URL renders broken in
-      # Conduit). Upload auth is a JWT the MCP mints from WEBUI_SECRET_KEY.
-      # OWUI_PUBLIC_URL must match the origin clients use to reach Open WebUI
-      # (same-origin is required for the mobile client to attach its auth token).
-      # Uploads go to the k3s Open WebUI Service ClusterIP: plain HTTP, so no
-      # internal-CA trust problem, and the host can reach ClusterIPs via Cilium.
-      # OWUI_PUBLIC_URL below stays http://192.168.86.63:8080 -- the address
-      # clients actually fetch images from, preserved across the migration.
-      - OWUI_UPLOAD_URL=http://10.43.59.223:8080
-      - OWUI_PUBLIC_URL=${OWUI_PUBLIC_URL}
-      - OWUI_USER_ID=${OWUI_USER_ID}
-      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
-    depends_on:
-      - comfyui
-  # memory-mcp: MIGRATED TO k3s (2026-08-14). Manifests live in the
-  # ai-home-server-k8s repo under workloads/web-tier.
+  # ---------------------------------------------------------------------------
+  # MIGRATED TO k3s -- these no longer run under Docker Compose.
+  # Manifests live in the private ai-home-server-k8s repo, deployed by Argo CD:
+  #
+  #   workloads/web-tier/   open-webui, searxng, searxng-mcp, memory-mcp
+  #                         (cut over 2026-08-14)
+  #   workloads/gpu-tier/   ollama, comfyui, comfyui-mcp
+  #                         (cut over 2026-08-15)
+  #
+  # What remains below is deliberate: Home Assistant, Piper, Whisper and Plex
+  # stay on Compose permanently. Docker and k3s share this host by design.
+  #
+  # The comfyui-data volume at the bottom is RETAINED, not orphaned -- it is the
+  # rollback path for the ComfyUI migration, same as the open-webui volume.
+  # ---------------------------------------------------------------------------
 
   homeassistant:
     image: ghcr.io/home-assistant/home-assistant:2026.7.1

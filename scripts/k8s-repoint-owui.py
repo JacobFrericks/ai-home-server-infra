@@ -20,20 +20,28 @@ The MCP tool-server URLs in tool_server.connections have the same problem, for
 the same reason, and are fixed here too.
 
 Addresses used, and why:
-  * Ollama and Home Assistant stay on Docker Compose and are host-network, so a
-    pod reaches them by NODE IP. ufw allows those ports from the pod CIDR only.
-  * SearXNG and memory-mcp migrated, so they are reached by in-cluster Service
-    DNS (or ClusterIP where a non-cluster client needs a stable address).
-  * comfyui-mcp stays on Compose until ComfyUI migrates; node IP, ufw-gated.
+  * Everything that migrated is reached by in-cluster Service DNS. Open WebUI is
+    itself a pod, so DNS is available to it and is preferred over an IP -- it
+    survives a Service being deleted and recreated, which a pinned IP does not.
+  * Home Assistant is the one remaining Compose dependency. It is host-network,
+    so a pod reaches it by NODE IP, with ufw allowing that port from the pod
+    CIDR only.
+
+STAGE 5 UPDATE: ollama and comfyui-mcp moved into the cluster, so their node-IP
+addresses here went stale in exactly the way this script exists to fix.
+The `generate` connection id must NOT change -- Open WebUI prefixes it onto the
+MCP server's raw tool name ("image") to build the model-facing "generate_image"
+that commit fb81952 tuned. Renaming the connection silently renames the tool.
 """
 import json, sqlite3, sys, time
 
 DB = "/app/backend/data/webui.db"
 NODE_IP = "192.168.86.63"
+OLLAMA = "http://ollama.ai-stack.svc.cluster.local:11434"
 
 CONFIG = {
-    "ollama.base_urls":             json.dumps([f"http://{NODE_IP}:11434"]),
-    "rag.ollama.base_url":          json.dumps(f"http://{NODE_IP}:11434"),
+    "ollama.base_urls":             json.dumps([OLLAMA]),
+    "rag.ollama.base_url":          json.dumps(OLLAMA),
     "web.search.searxng_query_url": json.dumps(
         "http://searxng.ai-stack.svc.cluster.local:8080/search?q=<query>"),
 }
@@ -41,7 +49,7 @@ MCP_URLS = {
     "searxng-web":    "http://searxng-mcp.ai-stack.svc.cluster.local:9200/mcp",
     "memory":         "http://memory-mcp.ai-stack.svc.cluster.local:9400/mcp",
     "home-assistant": f"http://{NODE_IP}:8123/api/mcp",
-    "generate":       f"http://{NODE_IP}:9300/mcp",
+    "generate":       "http://comfyui-mcp.ai-stack.svc.cluster.local:9300/mcp",
 }
 
 try:

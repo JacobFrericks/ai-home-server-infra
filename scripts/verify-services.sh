@@ -14,6 +14,16 @@ set -uo pipefail
 export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/config}
 
 STACK_DIR="/home/jacob/docker/ai-stack"
+
+# ---- in-cluster endpoints (ollama/comfyui/comfyui-mcp migrated to k3s) -------
+# Resolved via kubectl, not hardcoded: this script runs on the HOST, which cannot
+# resolve *.svc.cluster.local, but a baked-in ClusterIP would silently go stale if
+# a Service were ever recreated. The host reaches ClusterIPs via Cilium.
+clusterip() { kubectl -n ai-stack get svc "$1" -o jsonpath='{.spec.clusterIP}' 2>/dev/null; }
+export OLLAMA_EP="http://$(clusterip ollama):11434"
+export COMFY_EP="http://$(clusterip comfyui):8188"
+export COMFYMCP_EP="http://$(clusterip comfyui-mcp):9300/mcp"
+
 cd "$STACK_DIR" 2>/dev/null || { echo "cannot cd $STACK_DIR"; exit 2; }
 
 PASS=0; FAIL=0
@@ -63,7 +73,7 @@ fi
 # 2. Ollama  (gemma4:26b ONLY)
 # =========================================================================
 t0=$(date +%s.%N)
-og=$(curl -s --max-time 240 http://127.0.0.1:11434/api/generate \
+og=$(curl -s --max-time 240 ${OLLAMA_EP}/api/generate \
    -d '{"model":"gemma4:26b","prompt":"Reply with the single word: ok","stream":false,"think":false,"options":{"num_predict":16}}')
 t1=$(date +%s.%N)
 # Success = the model actually generated tokens (done + eval_count>0, no error),
@@ -166,8 +176,8 @@ record "SearXNG-MCP" "${mcp%%|*}" "${mcp#*|}"
 #     that the SDXL checkpoint is present, that the MCP tool is exposed, and
 #     that the 12b orchestrator model exists (listed, never loaded).
 # =========================================================================
-cu_h=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8188/system_stats)
-cu_ckpt=$(curl -s --max-time 15 http://127.0.0.1:8188/object_info/CheckpointLoaderSimple | python3 -c '
+cu_h=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 ${COMFY_EP}/system_stats)
+cu_ckpt=$(curl -s --max-time 15 ${COMFY_EP}/object_info/CheckpointLoaderSimple | python3 -c '
 import sys,json
 try:
     d=json.load(sys.stdin)
@@ -183,8 +193,8 @@ else
 fi
 
 cmcp=$(python3 - <<'PY'
-import json,urllib.request
-BASE="http://127.0.0.1:9300/mcp"
+import json,os,urllib.request
+BASE=os.environ["COMFYMCP_EP"]
 HDR={"Content-Type":"application/json","Accept":"application/json, text/event-stream"}
 def parse(body,ct):
     body=body.decode("utf-8","replace")
@@ -279,7 +289,7 @@ else
   record "Memory wiring" FAIL "${memwire#*|}"
 fi
 
-g12=$(curl -s --max-time 10 http://127.0.0.1:11434/api/tags | python3 -c 'import sys,json
+g12=$(curl -s --max-time 10 ${OLLAMA_EP}/api/tags | python3 -c 'import sys,json
 try: print(sum(1 for m in json.load(sys.stdin).get("models",[]) if m.get("name","").startswith("gemma4:12b")))
 except: print(0)')
 if [ "${g12:-0}" -ge 1 ]; then
