@@ -31,7 +31,7 @@ services:
       - /run/dbus:/run/dbus:ro
 
   piper:
-    image: rhasspy/wyoming-piper:2.3.1
+    image: rhasspy/wyoming-piper:2.4.2
     container_name: piper
     restart: unless-stopped
     ports:
