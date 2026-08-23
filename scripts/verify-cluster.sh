@@ -62,10 +62,31 @@ fi
 
 # --- 4. Argo: every Application Synced AND Healthy ---------------------------
 apps=$(kubectl -n argocd get app --no-headers 2>/dev/null | wc -l | tr -d ' ')
+# Applications annotated homeserver.local/sync-mode=record-only are NEVER
+# auto-synced on purpose (cilium: the CNI; argo-cd: self-management). They must
+# still be Healthy -- only the Synced requirement is waived, and only for apps
+# that declare the exemption themselves.
+recordonly=$(kubectl -n argocd get app -o json 2>/dev/null | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+out=[]
+for a in d.get("items",[]):
+    ann=(a["metadata"].get("annotations") or {})
+    if ann.get("homeserver.local/sync-mode")=="record-only":
+        out.append(a["metadata"]["name"])
+print(" ".join(out))
+' 2>/dev/null)
 argobad=$(kubectl -n argocd get app --no-headers 2>/dev/null \
-          | awk '$2!="Synced" || $3!="Healthy" {print $1"("$2"/"$3")"}' | tr '\n' ' ')
+          | awk -v ro="$recordonly" '
+              BEGIN { n=split(ro,a," "); for(i=1;i<=n;i++) skip[a[i]]=1 }
+              # record-only: Healthy is required, Synced is not
+              ($1 in skip) { if ($3!="Healthy") print $1"("$2"/"$3")"; next }
+              # everything else: both
+              ($2!="Synced" || $3!="Healthy") { print $1"("$2"/"$3")" }
+            ' | tr '\n' ' ')
+nro=$(echo "$recordonly" | wc -w | tr -d ' ')
 if [[ -n "$apps" && "$apps" -gt 0 && -z "$argobad" ]]; then
-  record "Argo CD applications" PASS "$apps apps Synced+Healthy"
+  record "Argo CD applications" PASS "$apps apps ok ($((apps-nro)) synced, $nro record-only)"
 else
   record "Argo CD applications" FAIL "${argobad:-no applications found}"
 fi
