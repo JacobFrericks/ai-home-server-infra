@@ -113,9 +113,13 @@ else
   if [[ $cksum_rc -eq 0 ]]; then
     record "sha256 of every file" "PASS" "$manifest_lines files match the reference"
   else
-    bad="$(printf '%s\n' "$cksum_out" | grep -c ':' )"
+    # Count ONLY the per-file failure lines. sha256sum also emits a trailing
+    # "WARNING: N computed checksums did NOT match" summary line, and counting
+    # every line containing a colon inflated the tally by one -- caught by
+    # tampering with a single file in a synthetic tree and being told 2 differed.
+    bad="$(printf '%s\n' "$cksum_out" | grep -c ': FAILED$')"
     record "sha256 of every file" "FAIL" "$bad file(s) differ from the reference"
-    printf '%s\n' "$cksum_out" | head -20 | sed 's/^/    /'
+    printf '%s\n' "$cksum_out" | grep ': FAILED$' | head -20 | sed 's/^/    /'
     [[ "$bad" -gt 20 ]] && printf '    ... and %s more\n' "$((bad - 20))"
   fi
 fi
