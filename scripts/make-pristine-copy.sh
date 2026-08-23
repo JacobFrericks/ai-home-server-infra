@@ -84,12 +84,26 @@ build_manifest() {
 }
 
 # --- the copy ---------------------------------------------------------------
-# --checksum, not the default size+mtime heuristic. Slower, and correct: mtimes
-# on this tree are known to be unreliable (a past copy flattened an entire
-# sibling collection to a single date), so mtime equality proves nothing here.
-do_sync() {
+# --checksum is applied on --refresh but NOT on --create, and the distinction
+# matters more than it looks:
+#
+#   --create   the destination is empty. There is nothing on the far side to
+#              compare against, so --checksum would read all ~55GB to compute
+#              checksums that cannot match anything, and only then transfer.
+#              Pure overhead -- roughly 50GB of wasted reads on top of the
+#              manifest pass that follows.
+#
+#   --refresh  the destination already holds a copy, and here mtime equality
+#              genuinely proves nothing: this tree's mtimes are demonstrably
+#              unreliable (1,562 of its files carry an identical 2016-12-08
+#              stamp from a past copy operation). rsync's default size+mtime
+#              heuristic would skip a file whose CONTENT changed but whose size
+#              and fake mtime did not -- exactly the drift this copy exists to
+#              detect. So --checksum is required on that path.
+do_sync() {  # $1 = extra rsync args
   mkdir -p "$DEST_ROOT"
-  rsync -aH --checksum --delete --info=progress2 "$SRC/" "$DEST/"
+  # shellcheck disable=SC2086
+  rsync -aH --delete --info=progress2 ${1:-} "$SRC/" "$DEST/"
 
   # Source and copy must agree before the manifest is taken, or the manifest
   # records a bad copy as if it were good.
@@ -112,7 +126,7 @@ do_create() {
   if [[ -f "$MANIFEST" ]]; then
     die "manifest already exists at $MANIFEST — use --refresh to re-sync, or --status to inspect. Refusing to silently overwrite a reference copy."
   fi
-  do_sync
+  do_sync                      # empty destination: no --checksum, see do_sync
   build_manifest
   harden
   log "done. Verify with: sudo ./scripts/verify-pristine-copy.sh"
@@ -124,7 +138,7 @@ do_refresh() {
   unlock
   chmod -R u+w "$DEST"
   rm -f "$MANIFEST" "$META"
-  do_sync
+  do_sync --checksum           # existing copy: mtimes here are not trustworthy
   build_manifest
   harden
 }
