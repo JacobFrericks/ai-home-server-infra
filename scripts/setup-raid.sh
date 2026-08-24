@@ -138,8 +138,22 @@ do_check() {
       printf '  %s timeout=%ss\n' "$dev" "$(cat "/sys/block/${dev#/dev/}/device/timeout" 2>/dev/null || echo '?')"
     fi
   done
-  [[ -f /etc/cron.d/mdadm ]] && echo "  scrub cron: present" || { warn "scrub cron missing"; rc=1; }
+  if [[ -x /usr/share/mdadm/checkarray && -f /etc/cron.d/mdadm ]]; then
+    echo "  scrub cron: present"
+  else
+    warn "scrub cron missing or checkarray not executable"; rc=1
+  fi
   systemctl is-active --quiet smartmontools && echo "  smartd: active" || { warn "smartd not active"; rc=1; }
+  # smartd stops reading at the first DEVICESCAN, so a self-test entry BELOW one
+  # is silently dead. Verify ours is genuinely above it, not merely present.
+  local ln_disk ln_scan
+  ln_disk="$(grep -n '^/dev/disk/by-id/.*-s (S/' /etc/smartd.conf 2>/dev/null | head -1 | cut -d: -f1)"
+  ln_scan="$(grep -n '^DEVICESCAN' /etc/smartd.conf 2>/dev/null | head -1 | cut -d: -f1)"
+  if [[ -n "$ln_disk" && ( -z "$ln_scan" || "$ln_disk" -lt "$ln_scan" ) ]]; then
+    echo "  smartd self-tests: scheduled (line $ln_disk, above DEVICESCAN)"
+  else
+    warn "smartd self-tests NOT scheduled (entry missing, or below DEVICESCAN and therefore ignored)"; rc=1
+  fi
 
   return $rc
 }
@@ -318,15 +332,29 @@ CRON
     log "installed monthly scrub cron"
   fi
 
-  # 4. smartd. Both drives are ~6 years old; self-tests give warning before failure.
+  # 4. smartd self-tests. Both drives are ~6 years old, so a scheduled long test
+  #    is the cheapest early warning available.
+  #
+  #    ⚠️ smartd IGNORES EVERY LINE AFTER THE FIRST `DEVICESCAN`, and Debian ships
+  #    one enabled by default. Appending a second DEVICESCAN — the obvious thing
+  #    to do — produces a config that looks correct, logs nothing, and schedules
+  #    no tests at all. Explicit per-device lines must go BEFORE that DEVICESCAN.
+  #    Addressed via /dev/disk/by-id so the entry follows the disk, not the letter.
   if [[ -f /etc/smartd.conf ]] && ! grep -q 'backup mirror' /etc/smartd.conf; then
-    cat >> /etc/smartd.conf <<'SMART'
-# --- backup mirror (added by setup-raid.sh) ---
-# Short test Sun 03:00, long test 1st Sat 04:00. Logged to syslog, which Alloy
-# already ships to Loki.
-DEVICESCAN -a -o on -S on -n standby,q -s (S/../.././03|L/../../6/04) -W 4,45,55
-SMART
-    log "smartd tests scheduled"
+    local byid tmpconf; tmpconf="$(mktemp)"
+    {
+      echo '# --- backup mirror (added by setup-raid.sh) ---'
+      echo '# Short test Sun 03:00, long test 1st Sat 04:00, temp warn 45C / crit 55C.'
+      echo '# Placed above DEVICESCAN on purpose: smartd stops reading at that line.'
+      for byid in /dev/disk/by-id/*"$SERIAL_RED" /dev/disk/by-id/*"$SERIAL_BLUE"; do
+        [[ -e "$byid" ]] && printf '%s -a -o on -S on -s (S/../.././03|L/../../6/04) -W 4,45,55\n' "$byid"
+      done
+      echo
+      cat /etc/smartd.conf
+    } > "$tmpconf"
+    cat "$tmpconf" > /etc/smartd.conf
+    rm -f "$tmpconf"
+    log "smartd tests scheduled (above DEVICESCAN)"
   fi
   # The unit is smartmontools.service; "smartd" is only an alias and cannot be
   # enabled directly on Debian.
