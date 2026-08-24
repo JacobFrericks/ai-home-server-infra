@@ -112,6 +112,52 @@ stage_sqlite() {
   fi
 }
 
+# --- consistent snapshots of anything PostgreSQL -----------------------------
+# Immich is the first Postgres workload on this box, and it does NOT play by
+# the same rules as the SQLite ones above.
+#
+# 🔴 Immich's own documentation is explicit: DO NOT back up the Postgres data
+# directory. A live file copy of PGDATA is torn in exactly the way a `cp` of a
+# WAL-mode SQLite file is torn -- same class of bug stage_sqlite() exists to
+# prevent, different engine. pg_dump is the supported path.
+#
+# The dump is the load-bearing half of an Immich backup. The photo files are
+# just files, but the DATABASE holds the entire external-library index: which
+# assets exist, their dates, faces, tags, albums and locked-folder state. Lose
+# it and the photos survive as ordinary files while everything Immich knows
+# about them is gone.
+stage_postgres() {
+  local ns dep
+  for spec in "immich-private:immich-postgres"; do
+    ns="${spec%%:*}"; dep="${spec##*:}"
+    kubectl -n "$ns" get deploy "$dep" >/dev/null 2>&1 || continue
+
+    local pod
+    pod="$(kubectl -n "$ns" get pod -l "app=$dep" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
+    [[ -n "$pod" ]] || { log "WARN: $ns/$dep has no running pod; database NOT staged"; continue; }
+
+    local out="$STAGE/${ns}-${dep}.sql.gz"
+    # --clean --if-exists so the dump can be replayed onto a non-empty database
+    # without a manual drop first, which is what you actually want at 3am
+    # during a restore.
+    if kubectl -n "$ns" exec "$pod" -- \
+         pg_dump --clean --if-exists --username=immich --dbname=immich 2>/dev/null \
+         | gzip > "$out"; then
+      # A pg_dump that fails midway still leaves a valid gzip of a TRUNCATED
+      # dump. Size alone cannot tell them apart, so assert the terminator
+      # pg_dump writes only on success.
+      if zcat "$out" | tail -5 | grep -q 'PostgreSQL database dump complete'; then
+        log "staged $ns/$dep ($(du -h "$out" | cut -f1)) via pg_dump"
+      else
+        die "$ns/$dep dump is TRUNCATED (no completion marker) — refusing to store a partial database"
+      fi
+    else
+      rm -f "$out"
+      die "pg_dump failed for $ns/$dep — refusing to back up photos without their index"
+    fi
+  done
+}
+
 build_paths() {
   PATHS=("$STAGE")
   # Home Assistant: config + entity registry. .storage/*.json are written
@@ -122,6 +168,10 @@ build_paths() {
   for claim in memory-data comfyui-data; do
     p="$(pvc_path ai-stack "$claim")"; [[ -n "$p" ]] && PATHS+=("$p")
   done
+  # Immich's ORIGINALS only. The library is an external read-only mount, so
+  # these files are the irreplaceable half; everything Immich derives from them
+  # is excluded below.
+  [[ -d /home/jacob/backup/Jacob/untitled ]] && PATHS+=(/home/jacob/backup/Jacob/untitled)
   # Server-only secrets (git-ignored by design).
   [[ -f "$ENV_FILE" ]] && PATHS+=("$ENV_FILE")
   [[ -f "$STACK_DIR/monitoring/.env" ]] && PATHS+=("$STACK_DIR/monitoring/.env")
@@ -135,18 +185,29 @@ build_paths() {
 #                            config is entirely reproducible from git
 #   registry-data   images rebuildable from the Dockerfiles in git
 #   HA recorder db  large, history only
+#   immich thumbs/  regenerable: Immich rebuilds them from the originals with a
+#   encoded-video/  job. Backing them up would multiply the library size for
+#                   data that is derived, not authored. After a restore, run
+#                   the thumbnail + transcode jobs. The PRISTINE COPY is
+#                   excluded for the same reason -- it is a byte-identical
+#                   duplicate of a path already in PATHS, so including it would
+#                   double the photo bytes in every snapshot for no recovery
+#                   value. (restic dedupes, but the path list should still say
+#                   what it means.)
 EXCLUDES=(
   --exclude '*.safetensors' --exclude '*.ckpt' --exclude '*.gguf'
   --exclude 'home-assistant_v2.db*'
   --exclude '*/models/checkpoints/*'
   --exclude '*.tmp' --exclude '*-wal' --exclude '*-shm'
+  --exclude '/srv/photos/pristine'
+  --exclude '*/thumbs/*' --exclude '*/encoded-video/*'
 )
 
 do_backup() {
   have_repo || die "RESTIC_REPOSITORY / RESTIC_PASSWORD not set in $ENV_FILE — no target chosen yet"
   command -v restic >/dev/null || die "restic not installed; run --install first"
   restic snapshots >/dev/null 2>&1 || { log "initialising repo"; restic init; }
-  stage_sqlite; build_paths
+  stage_sqlite; stage_postgres; build_paths
   log "backing up: ${PATHS[*]}"
   restic backup "${PATHS[@]}" "${EXCLUDES[@]}" --tag homeserver --verbose
   restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune
@@ -155,7 +216,7 @@ do_backup() {
 }
 
 do_dry_run() {
-  stage_sqlite; build_paths
+  stage_sqlite; stage_postgres; build_paths
   log "WOULD back up:"; printf '  %s\n' "${PATHS[@]}"
   log "excludes: ${EXCLUDES[*]}"
   have_repo && log "repo: ${RESTIC_REPOSITORY}" || log "repo: NOT CONFIGURED — no backup would run"
