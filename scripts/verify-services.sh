@@ -463,6 +463,57 @@ else
 fi
 
 # =========================================================================
+# Backup mirror + restic
+# =========================================================================
+# These run unprivileged on purpose, so this script stays cron-safe as jacob.
+# Everything below reads /proc, /sys or the mounted filesystem -- no sudo.
+
+# RAID 1 health. [UU] means both members are present; [U_] or [_U] means the
+# mirror is degraded and running on a single ~6-year-old disk.
+if [ -e /proc/mdstat ] && grep -q "^md0" /proc/mdstat; then
+  md_flags="$(grep -o '\[[U_]*\]' /proc/mdstat | head -1)"
+  md_resync="$(grep -o 'resync = *[0-9.]*%' /proc/mdstat | head -1)"
+  if [ "$md_flags" = "[UU]" ]; then
+    record "RAID mirror (md0)" PASS "both disks up $md_flags${md_resync:+, $md_resync}"
+  else
+    record "RAID mirror (md0)" FAIL "DEGRADED $md_flags -- replace the failed disk"
+  fi
+else
+  record "RAID mirror (md0)" FAIL "md0 not assembled"
+fi
+
+# The mirror is mounted with nofail, so a missing array does NOT stop the boot.
+# That is deliberate, and it is exactly why this check has to exist.
+if mountpoint -q /srv/backup; then
+  bk_use="$(df -h --output=pcent,avail /srv/backup | tail -1 | tr -s ' ')"
+  record "Backup volume" PASS "/srv/backup mounted,${bk_use} free"
+else
+  record "Backup volume" FAIL "/srv/backup NOT mounted -- nightly backup cannot run"
+fi
+
+# Timer enabled is not the same as backups happening; freshness is checked next.
+if systemctl is-enabled --quiet homeserver-backup.timer 2>/dev/null; then
+  record "Backup timer" PASS "homeserver-backup.timer enabled"
+else
+  record "Backup timer" FAIL "homeserver-backup.timer not enabled"
+fi
+
+# Freshness, read from the metric the backup job publishes for node-exporter.
+# A silently failing backup looks identical to a working one until you need it.
+BK_METRIC=/var/lib/node_exporter/textfile_collector/homeserver_backup.prom
+if [ -r "$BK_METRIC" ]; then
+  bk_ts="$(awk '/^homeserver_backup_last_success_timestamp_seconds/{print $2}' "$BK_METRIC")"
+  bk_age=$(( ($(date +%s) - ${bk_ts:-0}) / 3600 ))
+  if [ "${bk_ts:-0}" -gt 0 ] && [ "$bk_age" -lt 48 ]; then
+    record "Backup freshness" PASS "last success ${bk_age}h ago"
+  else
+    record "Backup freshness" FAIL "last success ${bk_age}h ago (>48h)"
+  fi
+else
+  record "Backup freshness" FAIL "no success metric at $BK_METRIC"
+fi
+
+# =========================================================================
 # Report
 # =========================================================================
 echo
