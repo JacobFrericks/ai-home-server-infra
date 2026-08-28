@@ -514,6 +514,18 @@ else
 fi
 
 # =========================================================================
+# Host boot readiness
+# =========================================================================
+# A user-scoped NIC profile once left this box up-but-unreachable for 38 hours
+# after an automatic reboot: no network, so no k3s, so a silently failed backup.
+# The host looked healthy from the console and dead from everywhere else.
+if bootchk="$("$STACK_DIR/scripts/setup-host-boot.sh" --check 2>&1)"; then
+  record "Host boot readiness" PASS "NIC system-wide, default route, k3s+sshd enabled"
+else
+  record "Host boot readiness" FAIL "$(printf '%s' "$bootchk" | grep -i warn | head -1)"
+fi
+
+# =========================================================================
 # Report
 # =========================================================================
 echo

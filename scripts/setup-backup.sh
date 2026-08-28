@@ -66,12 +66,37 @@ die() { printf '[backup] ERROR: %s\n' "$*" >&2; exit 1; }
 
 have_repo() { [[ -n "${RESTIC_REPOSITORY:-}" && -n "${RESTIC_PASSWORD:-}" ]]; }
 
+# --- is the cluster actually answering? -------------------------------------
+# Not a nicety. On 2026-08-28 the host booted with no network (the NIC profile
+# was user-scoped, so it waited for a desktop login), k3s died with "no default
+# routes found", and this script hit `kubectl` returning nothing. The old
+# pvc_path piped that empty output straight into python, which raised
+# JSONDecodeError and -- under `set -e` -- killed the whole run. Result: zero
+# backup that night, including the 240GB of photos that were sitting right there
+# on a perfectly healthy disk and needed no cluster at all.
+CLUSTER_UP=0
+check_cluster() {
+  if kubectl get --raw='/readyz' >/dev/null 2>&1 || kubectl get pv >/dev/null 2>&1; then
+    CLUSTER_UP=1
+  else
+    CLUSTER_UP=0
+    log "WARN: the k3s API is NOT reachable — this run will be INCOMPLETE."
+    log "WARN: skipping webui.db, the sealed-secrets key, immich-db and the PVCs."
+  fi
+}
+
 # --- resolve the k3s PVC host paths by CLAIM, never by UUID -----------------
+# Returns empty (never fails) when the cluster is down, so a caller can decide.
 pvc_path() {  # $1=namespace $2=claim
+  [[ $CLUSTER_UP -eq 1 ]] || return 0
   kubectl get pv -o json 2>/dev/null | python3 -c '
 import json,sys
 ns,claim=sys.argv[1],sys.argv[2]
-for p in json.load(sys.stdin)["items"]:
+try:
+    items=json.load(sys.stdin)["items"]
+except Exception:
+    sys.exit(0)          # cluster unreachable or malformed: no path, not a crash
+for p in items:
     c=p["spec"].get("claimRef") or {}
     if c.get("namespace")==ns and c.get("name")==claim:
         src=p["spec"].get("hostPath") or p["spec"].get("local") or {}
@@ -82,6 +107,19 @@ for p in json.load(sys.stdin)["items"]:
 # --- consistent snapshots of anything SQLite --------------------------------
 stage_sqlite() {
   rm -rf "$STAGE"; mkdir -p "$STAGE"; chmod 700 "$STAGE"
+
+  # etcd snapshots are on local disk, so they are worth grabbing even when the
+  # API is down -- they are often exactly what you need to explain WHY it is.
+  if [[ -d /var/lib/rancher/k3s/server/db/snapshots ]]; then
+    cp -a /var/lib/rancher/k3s/server/db/snapshots "$STAGE/etcd-snapshots" 2>/dev/null || true
+    log "staged etcd snapshots"
+  fi
+
+  # Everything below needs a live API server. Skip rather than crash.
+  if [[ $CLUSTER_UP -ne 1 ]]; then
+    log "cluster down: skipping webui.db, sealed-secrets key and immich-db"
+    return 0
+  fi
 
   # webui.db is in WAL mode: a plain cp can miss the log and capture a TORN
   # database. VACUUM INTO produces a consistent single-file copy. This is the
@@ -104,12 +142,6 @@ stage_sqlite() {
     log "staged sealed-secrets master key ($(grep -c 'name:' "$STAGE/sealed-secrets-key.yaml") entries)"
   else
     log "WARN: could NOT export the sealed-secrets key — SealedSecrets would be unrecoverable"
-  fi
-
-  # Cluster state. Complementary to PVC contents, not a substitute.
-  if [[ -d /var/lib/rancher/k3s/server/db/snapshots ]]; then
-    cp -a /var/lib/rancher/k3s/server/db/snapshots "$STAGE/etcd-snapshots" 2>/dev/null || true
-    log "staged etcd snapshots"
   fi
 
   # Immich's Postgres. The photo FILES are an external read-only library under
@@ -236,13 +268,31 @@ do_backup() {
   have_repo || die "RESTIC_REPOSITORY / RESTIC_PASSWORD not set in $ENV_FILE — no target chosen yet"
   command -v restic >/dev/null || die "restic not installed; run --install first"
   restic snapshots >/dev/null 2>&1 || { log "initialising repo"; restic init; }
-  stage_sqlite; stage_postgres; build_paths
+  check_cluster
+  stage_sqlite; build_paths
+  if [[ $CLUSTER_UP -eq 1 ]]; then stage_postgres; fi
+
+  # A run without the cluster still saves the photos, documents and HA config --
+  # 240GB that needs no API server. It is tagged so it can never be mistaken for
+  # a full one, and it deliberately does NOT publish the success metric, so the
+  # freshness alert fires exactly as if nothing had run.
+  local tags=(--tag homeserver)
+  [[ $CLUSTER_UP -eq 1 ]] || tags+=(--tag incomplete)
+
   log "backing up: ${PATHS[*]}"
-  restic backup "${PATHS[@]}" "${EXCLUDES[@]}" --tag homeserver --verbose
+  restic backup "${PATHS[@]}" "${EXCLUDES[@]}" "${tags[@]}" --verbose
   restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune
   rm -rf "$STAGE"
-  publish_success_metric
-  log "done"
+
+  if [[ $CLUSTER_UP -eq 1 ]]; then
+    publish_success_metric
+    log "done"
+  else
+    # Non-zero so systemd records a failure. The data that could be saved WAS
+    # saved; this exit code is the alarm, not a rollback.
+    log "done, but INCOMPLETE — cluster was unreachable; snapshot tagged 'incomplete'"
+    return 1
+  fi
 }
 
 # A backup job that fails silently is worse than no backup, because it looks
@@ -264,7 +314,9 @@ publish_success_metric() {
 }
 
 do_dry_run() {
-  stage_sqlite; stage_postgres; build_paths
+  check_cluster
+  stage_sqlite; build_paths
+  if [[ $CLUSTER_UP -eq 1 ]]; then stage_postgres; fi
   log "WOULD back up:"; printf '  %s\n' "${PATHS[@]}"
   log "excludes: ${EXCLUDES[*]}"
   have_repo && log "repo: ${RESTIC_REPOSITORY}" || log "repo: NOT CONFIGURED — no backup would run"
