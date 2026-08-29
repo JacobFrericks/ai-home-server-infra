@@ -569,6 +569,73 @@ else
   record "Backup freshness" FAIL "no success metric at $BK_METRIC"
 fi
 
+
+# =========================================================================
+# Offsite backup (S3 Glacier Instant Retrieval)
+# =========================================================================
+# The RAID 1 mirror survives a dead disk. It does not survive a fire, a theft,
+# or a delete, and both members are ~6 years old and were bought together. These
+# checks cover the copy that does survive those -- and, just as importantly, the
+# BUCKET SETTINGS that keep it cheap and private. A misconfigured lifecycle rule
+# does not break anything visibly; it just quietly bills 5x.
+OFFSITE_METRIC=/var/lib/node_exporter/textfile_collector/homeserver_offsite.prom
+OFFSITE_BUCKET=homeserver-restic-offsite-p5ke0zp2me
+
+for t in critical bulk maintain; do
+  if systemctl is-enabled --quiet "homeserver-offsite-$t.timer" 2>/dev/null; then
+    record "Offsite timer ($t)" PASS "homeserver-offsite-$t.timer enabled"
+  else
+    record "Offsite timer ($t)" FAIL "homeserver-offsite-$t.timer not enabled"
+  fi
+done
+
+# Freshness per tier. The thresholds match the Grafana rules in the k8s repo
+# (OffsiteCriticalStale 36h, OffsiteBulkStale 10d) so the two cannot disagree.
+if [ -r "$OFFSITE_METRIC" ]; then
+  for spec in "critical:36" "bulk:240"; do
+    t="${spec%%:*}"; limit="${spec##*:}"
+    ts="$(awk -v t="$t" -F'[ {}]' '$0 ~ "tier=\""t"\"" {print $NF}' "$OFFSITE_METRIC" 2>/dev/null | tail -1)"
+    if [ -n "${ts:-}" ] && [ "${ts:-0}" -gt 0 ]; then
+      age=$(( ($(date +%s) - ts) / 3600 ))
+      if [ "$age" -lt "$limit" ]; then
+        record "Offsite freshness ($t)" PASS "last copy ${age}h ago (limit ${limit}h)"
+      else
+        record "Offsite freshness ($t)" FAIL "last copy ${age}h ago (>${limit}h)"
+      fi
+    else
+      record "Offsite freshness ($t)" FAIL "no timestamp for tier '$t' in $OFFSITE_METRIC"
+    fi
+  done
+else
+  record "Offsite freshness (critical)" FAIL "no metric at $OFFSITE_METRIC"
+  record "Offsite freshness (bulk)"     FAIL "no metric at $OFFSITE_METRIC"
+fi
+
+# Bucket settings. Credentials are sourced into a subshell and never echoed.
+if [ -r "$STACK_DIR/.env" ] && command -v aws >/dev/null 2>&1; then
+  ob_state="$(
+    set -a; . "$STACK_DIR/.env" >/dev/null 2>&1; set +a
+    ver="$(aws s3api get-bucket-versioning --bucket "$OFFSITE_BUCKET" --query Status --output text 2>/dev/null)"
+    pab="$(aws s3api get-public-access-block --bucket "$OFFSITE_BUCKET" \
+             --query "PublicAccessBlockConfiguration.[BlockPublicAcls,IgnorePublicAcls,BlockPublicPolicy,RestrictPublicBuckets]" \
+             --output text 2>/dev/null | tr -d " \t")"
+    lc="$(aws s3api get-bucket-lifecycle-configuration --bucket "$OFFSITE_BUCKET" --output json 2>/dev/null | grep -c GLACIER_IR)"
+    echo "$ver|$pab|$lc"
+  )"
+  IFS='|' read -r ob_ver ob_pab ob_lc <<< "$ob_state"
+  problems=""
+  [ "$ob_ver" = "Enabled" ]     || problems="$problems versioning=$ob_ver"
+  [ "$ob_pab" = "TrueTrueTrueTrue" ] || problems="$problems public-access-block=$ob_pab"
+  [ "${ob_lc:-0}" -ge 1 ]       || problems="$problems no-GLACIER_IR-lifecycle"
+  if [ -z "$problems" ]; then
+    record "Offsite bucket config" PASS "versioned, private, GLACIER_IR lifecycle"
+  else
+    record "Offsite bucket config" FAIL "issues:$problems"
+  fi
+else
+  record "Offsite bucket config" FAIL "cannot read $STACK_DIR/.env or aws CLI missing"
+fi
+
 # =========================================================================
 # Host boot readiness
 # =========================================================================

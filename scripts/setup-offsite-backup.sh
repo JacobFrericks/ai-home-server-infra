@@ -204,6 +204,14 @@ do_copy() {
   # Written ONLY after restic exits 0. A backup job that reports success it did
   # not achieve is worse than one that fails loudly.
   date +%s > "$STATE_DIR/$tier.ts"
+
+  # Repo size is refreshed on every copy, not only during monthly maintenance,
+  # so the OffsiteRepoShrank alert has a daily series to compare against. With
+  # the cache warm this reads local index files, not S3.
+  rdst stats --mode raw-data --json 2>/dev/null \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin)["total_size"])' \
+    > "$STATE_DIR/size.bytes" || true
+
   publish_metrics
   log "tier '$tier' copied"
 }
