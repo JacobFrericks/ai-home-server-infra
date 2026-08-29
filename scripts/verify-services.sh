@@ -334,6 +334,21 @@ else
 fi
 
 # =========================================================================
+# 5d. Assist can see WHERE THE USER IS
+#     The phone GPS reaches the model only through HA, and only for entities
+#     exposed to Assist. Without this the model answers "weather" from the
+#     search engine guessing at the house IP.
+# =========================================================================
+loc=$(bash "$(dirname "$0")/setup-assist-location.sh" --check 2>/dev/null || true)
+loc_off=$(printf "%s" "$loc" | grep -c "exposed_to_assist=False" || true)
+loc_on=$(printf "%s" "$loc" | grep -c "exposed_to_assist=True" || true)
+if [ "$loc_off" = 0 ] && [ "$loc_on" -gt 0 ]; then
+  record "Assist location" PASS "$loc_on entity(s) exposed: phone GPS reaches the model"
+else
+  record "Assist location" FAIL "$loc_off entity(s) NOT exposed to Assist"
+fi
+
+# =========================================================================
 # 6. Piper -> Whisper voice round-trip (raw-socket Wyoming, no installs)
 # =========================================================================
 voice=$(python3 - <<'PY'
