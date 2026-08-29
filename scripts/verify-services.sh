@@ -582,6 +582,92 @@ else
 fi
 
 # =========================================================================
+# Alert delivery  (Grafana-native rules -> ntfy on the calendar Pi)
+# =========================================================================
+# This block exists because the alerts were, for five days, unable to notify
+# anyone at all: #8 shipped them as a PrometheusRule, and this cluster runs
+# alertmanager.enabled=false on purpose, so they were evaluated and dropped.
+# "The rule exists" was true the whole time and told us nothing. These checks
+# assert the DELIVERY PATH, which is the part that was actually broken.
+#
+# The ntfy topic is the only access control on the channel, so it is read at
+# runtime and never printed -- this repo is public.
+if [ -n "$GRAFANA_PW" ]; then
+  gapi() { curl -s --max-time 15 -u "admin:$GRAFANA_PW" "http://${GRAFANA_EP}$1"; }
+
+  # -- 1. both ntfy contact points provisioned, and the severity route present
+  read -r cp_n route_ok < <(gapi /api/v1/provisioning/contact-points | python3 -c '
+import sys,json
+try: cps=json.load(sys.stdin)
+except Exception: print("0 no"); raise SystemExit
+names={c.get("name") for c in cps}
+print(len(names & {"ntfy-critical","ntfy-warning"}), "yes" if {"ntfy-critical","ntfy-warning"} <= names else "no")')
+  if [ "${cp_n:-0}" = 2 ]; then
+    record "Alert contact points" PASS "ntfy-critical + ntfy-warning provisioned"
+  else
+    record "Alert contact points" FAIL "expected 2 ntfy contact points, found ${cp_n:-0}"
+  fi
+
+  pol=$(gapi /api/v1/provisioning/policies | python3 -c '
+import sys,json
+try: p=json.load(sys.stdin)
+except Exception: print("ERR"); raise SystemExit
+d=p.get("receiver","")
+crit=[r.get("receiver") for r in (p.get("routes") or [])
+      if ["severity","=","critical"] in (r.get("object_matchers") or [])]
+print("%s->%s" % (d, crit[0]) if crit else "NOROUTE")')
+  case "$pol" in
+    "ntfy-warning->ntfy-critical") record "Alert routing" PASS "default ntfy-warning, severity=critical to ntfy-critical" ;;
+    NOROUTE) record "Alert routing" FAIL "no severity=critical route -- criticals would go to the warning channel" ;;
+    *)       record "Alert routing" FAIL "unexpected policy tree: $pol" ;;
+  esac
+
+  # -- 2. every rule actually EVALUATES. A rule whose query errors is a rule
+  #       that will never fire, and it looks exactly like a quiet one.
+  read -r r_tot r_bad < <(gapi /api/prometheus/grafana/api/v1/rules | python3 -c '
+import sys,json
+try: gs=json.load(sys.stdin)["data"]["groups"]
+except Exception: print("0 0"); raise SystemExit
+rs=[r for g in gs for r in g.get("rules",[])]
+print(len(rs), sum(1 for r in rs if r.get("health")!="ok"))')
+  if [ "${r_tot:-0}" -ge 11 ] && [ "${r_bad:-1}" -eq 0 ]; then
+    record "Alert rules healthy" PASS "$r_tot rules, all evaluating"
+  else
+    record "Alert rules healthy" FAIL "${r_tot:-0} rules, ${r_bad:-?} with an evaluation error"
+  fi
+
+  # -- 3. the topic Grafana publishes to still EXISTS on the Pi.
+  #       Rebuilding the Pi regenerates a random topic unless one is supplied,
+  #       and ntfy is deny-all: the old topic would then 403 and every alert
+  #       would vanish silently. A GET is used, not a POST, so this check never
+  #       buzzes the phone. 200 = topic reachable and permitted, 403 = drift.
+  ntfy_url=$(gapi /api/v1/provisioning/contact-points | python3 -c '
+import sys,json
+try: cps=json.load(sys.stdin)
+except Exception: raise SystemExit
+for c in cps:
+    if c.get("name")=="ntfy-critical":
+        print(c.get("settings",{}).get("url","")); break')
+  if [ -n "$ntfy_url" ]; then
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${ntfy_url}/json?poll=1&since=1s")
+    ntfy_host=${ntfy_url#http://}; ntfy_host=${ntfy_host%%/*}
+    case "$code" in
+      200) record "ntfy topic reachable" PASS "$ntfy_host accepted the configured topic" ;;
+      403) record "ntfy topic reachable" FAIL "$ntfy_host denied it -- topic drift, alerts are being dropped" ;;
+      000) record "ntfy topic reachable" FAIL "$ntfy_host unreachable (Pi down, or ufw)" ;;
+      *)   record "ntfy topic reachable" FAIL "$ntfy_host returned HTTP $code" ;;
+    esac
+  else
+    record "ntfy topic reachable" FAIL "ntfy-critical contact point has no url"
+  fi
+else
+  record "Alert contact points" FAIL "no grafana admin password; cannot check"
+  record "Alert routing"        FAIL "no grafana admin password; cannot check"
+  record "Alert rules healthy"  FAIL "no grafana admin password; cannot check"
+  record "ntfy topic reachable" FAIL "no grafana admin password; cannot check"
+fi
+
+# =========================================================================
 # Report
 # =========================================================================
 echo
