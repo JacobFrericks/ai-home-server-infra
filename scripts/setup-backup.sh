@@ -53,6 +53,13 @@ STAGE=/var/lib/backup-staging          # consistent copies land here first
 KUBECONFIG_PATH=/etc/rancher/k3s/k3s.yaml
 export KUBECONFIG="$KUBECONFIG_PATH"
 
+# systemd starts this with no $HOME, and restic finds its cache via
+# $XDG_CACHE_HOME or $HOME. Every run since this timer was installed has logged
+# "unable to open cache" and rebuilt its index from scratch. Harmless against a
+# local repo beyond the wasted time; not harmless once the same script family
+# talks to S3, where a cache miss is billed egress.
+export RESTIC_CACHE_DIR="${RESTIC_CACHE_DIR:-/var/cache/restic}"
+
 log() { printf '[backup] %s\n' "$*"; }
 die() { printf '[backup] ERROR: %s\n' "$*" >&2; exit 1; }
 
@@ -363,7 +370,7 @@ do_install() {
   command -v restic >/dev/null || { log "installing restic"; apt-get update -qq && apt-get install -y -qq restic sqlite3; }
   # Where publish_success_metric drops the freshness gauge. node-exporter reads
   # this directory via a hostPath mount (see the monitoring repo).
-  mkdir -p /var/lib/node_exporter/textfile_collector
+  mkdir -p /var/lib/node_exporter/textfile_collector "$RESTIC_CACHE_DIR"
   chmod 755 /var/lib/node_exporter/textfile_collector
   cat > /etc/systemd/system/homeserver-backup.service <<'UNIT'
 [Unit]

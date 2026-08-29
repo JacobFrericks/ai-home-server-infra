@@ -53,6 +53,12 @@ BUCKET=homeserver-restic-offsite-p5ke0zp2me
 # nothing bumping into Glacier IR's 128KB minimum billable object size.
 OFFSITE_PACK_SIZE=64
 
+# systemd starts services with no $HOME, and restic locates its cache via
+# $XDG_CACHE_HOME or $HOME. Without one it runs cacheless and re-downloads the
+# repository index from S3 on EVERY run -- slow, and billed as egress at
+# $0.09/GB. Pin the cache explicitly so it never depends on who invoked us.
+export RESTIC_CACHE_DIR="${RESTIC_CACHE_DIR:-/var/cache/restic}"
+
 # Retention offsite is deliberately LONGER than local (7d/4w/6m). Offsite is the
 # copy you reach for when the local one is gone, which is exactly when you may
 # not know how long the problem has been going on. It also keeps objects past
@@ -190,7 +196,7 @@ do_copy() {
     || die "offsite repo does not exist — run --init first"
 
   make_from_password_file
-  mkdir -p "$STATE_DIR"; chmod 700 "$STATE_DIR"
+  mkdir -p "$STATE_DIR" "$RESTIC_CACHE_DIR"; chmod 700 "$STATE_DIR"
 
   log "copying tier '$tier' -> $DST"
   rdst copy --from-repo "$SRC" --from-password-file "$FROM_PW" --tag "$tier"
@@ -206,7 +212,7 @@ do_copy() {
 do_maintain() {
   rdst --no-cache --retry-lock=0 cat config >/dev/null 2>&1 \
     || die "offsite repo does not exist — run --init first"
-  mkdir -p "$STATE_DIR"; chmod 700 "$STATE_DIR"
+  mkdir -p "$STATE_DIR" "$RESTIC_CACHE_DIR"; chmod 700 "$STATE_DIR"
 
   # --group-by '' collapses each tier into ONE group. The default grouping is
   # host+paths, and a cluster-down run changes the path list, which would
