@@ -26,7 +26,8 @@ set -euo pipefail
 log() { printf "[assist-location] %s\n" "$*"; }
 die() { printf "[assist-location] ERROR: %s\n" "$*" >&2; exit 1; }
 
-ENTITIES="device_tracker.jacob_s_phone person.jacob"
+# Callers may override, e.g. setup-ha-weather.sh exposing the weather entity.
+ENTITIES="${ENTITIES:-device_tracker.jacob_s_phone person.jacob}"
 KUBECTL="sudo k3s kubectl"
 
 ha_token() {

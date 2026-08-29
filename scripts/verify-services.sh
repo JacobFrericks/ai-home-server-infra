@@ -349,6 +349,32 @@ else
 fi
 
 # =========================================================================
+# 5e. HA weather, and the container DNS it depends on
+#     Docker writes a container's /etc/resolv.conf from the HOST file at start.
+#     Containers started while the host had no DHCP lease get an EMPTY one and
+#     keep it for their whole life: no DNS, no cloud integrations, no met.no.
+#     Nothing logs an error at the container level, so check it directly.
+# =========================================================================
+dns_bad=""
+for c in $(docker ps --format '{{.Names}}' 2>/dev/null); do
+  n=$(docker exec "$c" cat /etc/resolv.conf 2>/dev/null | grep -c '^nameserver' || true)
+  [ "${n:-0}" -eq 0 ] && dns_bad="$dns_bad $c"
+done
+if [ -z "$dns_bad" ]; then
+  record "Container DNS" PASS "every docker container has a nameserver"
+else
+  record "Container DNS" FAIL "no nameserver in:$dns_bad (restart them; they booted with no lease)"
+fi
+
+wx=$(bash "$(dirname "$0")/setup-ha-weather.sh" --check 2>&1 || true)
+wx_line=$(printf '%s' "$wx" | grep -m1 '^  weather\.' | sed 's/^ *//')
+if printf '%s' "$wx" | grep -q 'exposed_to_assist=True'; then
+  record "HA weather" PASS "${wx_line:-exposed}"
+else
+  record "HA weather" FAIL "no weather entity exposed to Assist"
+fi
+
+# =========================================================================
 # 6. Piper -> Whisper voice round-trip (raw-socket Wyoming, no installs)
 # =========================================================================
 voice=$(python3 - <<'PY'
