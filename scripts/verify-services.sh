@@ -334,6 +334,62 @@ else
 fi
 
 # =========================================================================
+# 5d. Assist can see WHERE THE USER IS
+#     The phone GPS reaches the model only through HA, and only for entities
+#     exposed to Assist. Without this the model answers "weather" from the
+#     search engine guessing at the house IP.
+# =========================================================================
+loc=$(bash "$(dirname "$0")/setup-assist-location.sh" --check 2>/dev/null || true)
+loc_off=$(printf "%s" "$loc" | grep -c "exposed_to_assist=False" || true)
+loc_on=$(printf "%s" "$loc" | grep -c "exposed_to_assist=True" || true)
+if [ "$loc_off" = 0 ] && [ "$loc_on" -gt 0 ]; then
+  record "Assist location" PASS "$loc_on entity(s) exposed: phone GPS reaches the model"
+else
+  record "Assist location" FAIL "$loc_off entity(s) NOT exposed to Assist"
+fi
+
+# =========================================================================
+# 5e. HA weather, and the container DNS it depends on
+#     Docker writes a container's /etc/resolv.conf from the HOST file at start.
+#     Containers started while the host had no DHCP lease get an EMPTY one and
+#     keep it for their whole life: no DNS, no cloud integrations, no met.no.
+#     Nothing logs an error at the container level, so check it directly.
+# =========================================================================
+dns_bad=""
+for c in $(docker ps --format '{{.Names}}' 2>/dev/null); do
+  n=$(docker exec "$c" cat /etc/resolv.conf 2>/dev/null | grep -c '^nameserver' || true)
+  [ "${n:-0}" -eq 0 ] && dns_bad="$dns_bad $c"
+done
+if [ -z "$dns_bad" ]; then
+  record "Container DNS" PASS "every docker container has a nameserver"
+else
+  record "Container DNS" FAIL "no nameserver in:$dns_bad (restart them; they booted with no lease)"
+fi
+
+wx=$(bash "$(dirname "$0")/setup-ha-weather.sh" --check 2>&1 || true)
+wx_line=$(printf '%s' "$wx" | grep -m1 '^  weather\.' | sed 's/^ *//')
+if printf '%s' "$wx" | grep -q 'exposed_to_assist=True'; then
+  record "HA weather" PASS "${wx_line:-exposed}"
+else
+  record "HA weather" FAIL "no weather entity exposed to Assist"
+fi
+
+# =========================================================================
+# 5f. Weather at the PHONE, not at the house
+#     met.no is pinned to the home coordinates, so it is wrong the moment the
+#     user leaves. The rest sensor re-renders its URL from the live tracker on
+#     every poll; if it goes stale or loses its Assist exposure the model
+#     quietly answers with house weather instead of saying it does not know.
+# =========================================================================
+lw=$(bash "$(dirname "$0")/setup-ha-location-weather.sh" --check 2>&1 || true)
+lw_state=$(printf '%s' "$lw" | grep -m1 'sensor.weather_at_my_location = ' | sed 's/.*= //')
+if printf '%s' "$lw" | grep -q 'exposed_to_assist=True' && [ -n "$lw_state" ]; then
+  record "Weather at phone" PASS "$lw_state"
+else
+  record "Weather at phone" FAIL "sensor missing, stale, or not exposed to Assist"
+fi
+
+# =========================================================================
 # 6. Piper -> Whisper voice round-trip (raw-socket Wyoming, no installs)
 # =========================================================================
 voice=$(python3 - <<'PY'
@@ -460,6 +516,69 @@ except: print("ERR")')
 else
   if [ "$gh" = ok ]; then record "Grafana + datasources" PASS "db=ok (no creds for datasource test)"
   else record "Grafana + datasources" FAIL "db=$gh"; fi
+fi
+
+# =========================================================================
+# Backup mirror + restic
+# =========================================================================
+# These run unprivileged on purpose, so this script stays cron-safe as jacob.
+# Everything below reads /proc, /sys or the mounted filesystem -- no sudo.
+
+# RAID 1 health. [UU] means both members are present; [U_] or [_U] means the
+# mirror is degraded and running on a single ~6-year-old disk.
+if [ -e /proc/mdstat ] && grep -q "^md0" /proc/mdstat; then
+  md_flags="$(grep -o '\[[U_]*\]' /proc/mdstat | head -1)"
+  md_resync="$(grep -o 'resync = *[0-9.]*%' /proc/mdstat | head -1)"
+  if [ "$md_flags" = "[UU]" ]; then
+    record "RAID mirror (md0)" PASS "both disks up $md_flags${md_resync:+, $md_resync}"
+  else
+    record "RAID mirror (md0)" FAIL "DEGRADED $md_flags -- replace the failed disk"
+  fi
+else
+  record "RAID mirror (md0)" FAIL "md0 not assembled"
+fi
+
+# The mirror is mounted with nofail, so a missing array does NOT stop the boot.
+# That is deliberate, and it is exactly why this check has to exist.
+if mountpoint -q /srv/backup; then
+  bk_use="$(df -h --output=pcent,avail /srv/backup | tail -1 | tr -s ' ')"
+  record "Backup volume" PASS "/srv/backup mounted,${bk_use} free"
+else
+  record "Backup volume" FAIL "/srv/backup NOT mounted -- nightly backup cannot run"
+fi
+
+# Timer enabled is not the same as backups happening; freshness is checked next.
+if systemctl is-enabled --quiet homeserver-backup.timer 2>/dev/null; then
+  record "Backup timer" PASS "homeserver-backup.timer enabled"
+else
+  record "Backup timer" FAIL "homeserver-backup.timer not enabled"
+fi
+
+# Freshness, read from the metric the backup job publishes for node-exporter.
+# A silently failing backup looks identical to a working one until you need it.
+BK_METRIC=/var/lib/node_exporter/textfile_collector/homeserver_backup.prom
+if [ -r "$BK_METRIC" ]; then
+  bk_ts="$(awk '/^homeserver_backup_last_success_timestamp_seconds/{print $2}' "$BK_METRIC")"
+  bk_age=$(( ($(date +%s) - ${bk_ts:-0}) / 3600 ))
+  if [ "${bk_ts:-0}" -gt 0 ] && [ "$bk_age" -lt 48 ]; then
+    record "Backup freshness" PASS "last success ${bk_age}h ago"
+  else
+    record "Backup freshness" FAIL "last success ${bk_age}h ago (>48h)"
+  fi
+else
+  record "Backup freshness" FAIL "no success metric at $BK_METRIC"
+fi
+
+# =========================================================================
+# Host boot readiness
+# =========================================================================
+# A user-scoped NIC profile once left this box up-but-unreachable for 38 hours
+# after an automatic reboot: no network, so no k3s, so a silently failed backup.
+# The host looked healthy from the console and dead from everywhere else.
+if bootchk="$("$STACK_DIR/scripts/setup-host-boot.sh" --check 2>&1)"; then
+  record "Host boot readiness" PASS "NIC system-wide, default route, k3s+sshd enabled"
+else
+  record "Host boot readiness" FAIL "$(printf '%s' "$bootchk" | grep -i warn | head -1)"
 fi
 
 # =========================================================================

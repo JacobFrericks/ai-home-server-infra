@@ -33,17 +33,18 @@
 #     survive the disk they are written to.
 #
 # ---------------------------------------------------------------------------
-# STATUS: TIER 1 TARGET NOT YET CHOSEN (2026-08-15)
+# STATUS: LIVE since 2026-08-23
 # ---------------------------------------------------------------------------
-# The user will attach a dedicated backup drive later; the internal disks
-# (sda/sdb/sdc) hold existing data and are deliberately NOT touched. Offsite
-# (S3 Glacier IR) is deferred. Until RESTIC_REPOSITORY is set in .env this
-# script installs cleanly and the timer refuses to run rather than pretending
-# to back anything up.
+# Target is /srv/backup/restic — an ext4 filesystem on /dev/md0, a two-disk
+# mdadm RAID 1 mirror built by scripts/setup-raid.sh. One disk can die without
+# losing the repository. Both member disks are ~6 years old, so the mirror is a
+# TARGET, not a strategy: offsite (S3 Glacier IR) is still deferred and still
+# the real remaining gap.
 #
-# ⚠️ THIS MEANS THERE IS CURRENTLY NO BACKUP. That is a known, accepted state,
-# not an oversight — see the plan. Everything else is ready so that attaching a
-# drive is a two-line change: set RESTIC_REPOSITORY + RESTIC_PASSWORD, re-run.
+# RESTIC_REPOSITORY and RESTIC_PASSWORD live in the git-ignored .env. The
+# password is the encryption key and MUST also exist off this machine — if the
+# box is lost with the only copy of the password, every snapshot on the mirror
+# is permanently unreadable.
 set -euo pipefail
 
 STACK_DIR=/home/jacob/docker/ai-stack
@@ -65,12 +66,37 @@ die() { printf '[backup] ERROR: %s\n' "$*" >&2; exit 1; }
 
 have_repo() { [[ -n "${RESTIC_REPOSITORY:-}" && -n "${RESTIC_PASSWORD:-}" ]]; }
 
+# --- is the cluster actually answering? -------------------------------------
+# Not a nicety. On 2026-08-28 the host booted with no network (the NIC profile
+# was user-scoped, so it waited for a desktop login), k3s died with "no default
+# routes found", and this script hit `kubectl` returning nothing. The old
+# pvc_path piped that empty output straight into python, which raised
+# JSONDecodeError and -- under `set -e` -- killed the whole run. Result: zero
+# backup that night, including the 240GB of photos that were sitting right there
+# on a perfectly healthy disk and needed no cluster at all.
+CLUSTER_UP=0
+check_cluster() {
+  if kubectl get --raw='/readyz' >/dev/null 2>&1 || kubectl get pv >/dev/null 2>&1; then
+    CLUSTER_UP=1
+  else
+    CLUSTER_UP=0
+    log "WARN: the k3s API is NOT reachable — this run will be INCOMPLETE."
+    log "WARN: skipping webui.db, the sealed-secrets key, immich-db and the PVCs."
+  fi
+}
+
 # --- resolve the k3s PVC host paths by CLAIM, never by UUID -----------------
+# Returns empty (never fails) when the cluster is down, so a caller can decide.
 pvc_path() {  # $1=namespace $2=claim
+  [[ $CLUSTER_UP -eq 1 ]] || return 0
   kubectl get pv -o json 2>/dev/null | python3 -c '
 import json,sys
 ns,claim=sys.argv[1],sys.argv[2]
-for p in json.load(sys.stdin)["items"]:
+try:
+    items=json.load(sys.stdin)["items"]
+except Exception:
+    sys.exit(0)          # cluster unreachable or malformed: no path, not a crash
+for p in items:
     c=p["spec"].get("claimRef") or {}
     if c.get("namespace")==ns and c.get("name")==claim:
         src=p["spec"].get("hostPath") or p["spec"].get("local") or {}
@@ -81,6 +107,19 @@ for p in json.load(sys.stdin)["items"]:
 # --- consistent snapshots of anything SQLite --------------------------------
 stage_sqlite() {
   rm -rf "$STAGE"; mkdir -p "$STAGE"; chmod 700 "$STAGE"
+
+  # etcd snapshots are on local disk, so they are worth grabbing even when the
+  # API is down -- they are often exactly what you need to explain WHY it is.
+  if [[ -d /var/lib/rancher/k3s/server/db/snapshots ]]; then
+    cp -a /var/lib/rancher/k3s/server/db/snapshots "$STAGE/etcd-snapshots" 2>/dev/null || true
+    log "staged etcd snapshots"
+  fi
+
+  # Everything below needs a live API server. Skip rather than crash.
+  if [[ $CLUSTER_UP -ne 1 ]]; then
+    log "cluster down: skipping webui.db, sealed-secrets key and immich-db"
+    return 0
+  fi
 
   # webui.db is in WAL mode: a plain cp can miss the log and capture a TORN
   # database. VACUUM INTO produces a consistent single-file copy. This is the
@@ -105,10 +144,22 @@ stage_sqlite() {
     log "WARN: could NOT export the sealed-secrets key — SealedSecrets would be unrecoverable"
   fi
 
-  # Cluster state. Complementary to PVC contents, not a substitute.
-  if [[ -d /var/lib/rancher/k3s/server/db/snapshots ]]; then
-    cp -a /var/lib/rancher/k3s/server/db/snapshots "$STAGE/etcd-snapshots" 2>/dev/null || true
-    log "staged etcd snapshots"
+  # Immich's Postgres. The photo FILES are an external read-only library under
+  # /home/jacob/backup (backed up as a plain path below), but the database is
+  # what makes them a library rather than a folder: albums, faces, dates, and
+  # the Locked Folder membership all live here and exist nowhere else.
+  # A file-level copy of a running Postgres data directory is torn by
+  # definition, so dump it through the server instead.
+  if kubectl -n immich-private get deploy immich-postgres >/dev/null 2>&1; then
+    if kubectl -n immich-private exec deploy/immich-postgres -- \
+         sh -c 'pg_dumpall --clean --if-exists -U "$POSTGRES_USER"' \
+         > "$STAGE/immich-db.sql" 2>/dev/null && [[ -s "$STAGE/immich-db.sql" ]]; then
+      chmod 600 "$STAGE/immich-db.sql"
+      log "staged immich-db.sql ($(du -h "$STAGE/immich-db.sql" | cut -f1))"
+    else
+      rm -f "$STAGE/immich-db.sql"
+      log "WARN: immich pg_dumpall FAILED — the photo library metadata is NOT backed up"
+    fi
   fi
 }
 
@@ -176,6 +227,11 @@ build_paths() {
   [[ -f "$ENV_FILE" ]] && PATHS+=("$ENV_FILE")
   [[ -f "$STACK_DIR/monitoring/.env" ]] && PATHS+=("$STACK_DIR/monitoring/.env")
   [[ -d "$STACK_DIR/prompts" ]] && PATHS+=("$STACK_DIR/prompts")
+  # Photos, documents and the old PC's archive (~234GB). These are ORIGINALS,
+  # not a copy of something else: they were moved off the WD drives when those
+  # became the RAID mirror, so the NVMe holds the only copy. Immich reads this
+  # tree as a read-only external library, so it is not duplicated in any PVC.
+  [[ -d /home/jacob/backup ]] && PATHS+=(/home/jacob/backup)
 }
 
 # Deliberately excluded, with reasons:
@@ -194,6 +250,9 @@ build_paths() {
 #                   double the photo bytes in every snapshot for no recovery
 #                   value. (restic dedupes, but the path list should still say
 #                   what it means.)
+#   .Trash-1000     deleted files the user already threw away
+#   System Volume   Windows metadata carried in from the old PC archive
+#   Information/
 EXCLUDES=(
   --exclude '*.safetensors' --exclude '*.ckpt' --exclude '*.gguf'
   --exclude 'home-assistant_v2.db*'
@@ -201,22 +260,63 @@ EXCLUDES=(
   --exclude '*.tmp' --exclude '*-wal' --exclude '*-shm'
   --exclude '/srv/photos/pristine'
   --exclude '*/thumbs/*' --exclude '*/encoded-video/*'
+  --exclude '*/.Trash-1000/*'
+  --exclude '*/System Volume Information/*'
 )
 
 do_backup() {
   have_repo || die "RESTIC_REPOSITORY / RESTIC_PASSWORD not set in $ENV_FILE — no target chosen yet"
   command -v restic >/dev/null || die "restic not installed; run --install first"
   restic snapshots >/dev/null 2>&1 || { log "initialising repo"; restic init; }
-  stage_sqlite; stage_postgres; build_paths
+  check_cluster
+  stage_sqlite; build_paths
+  if [[ $CLUSTER_UP -eq 1 ]]; then stage_postgres; fi
+
+  # A run without the cluster still saves the photos, documents and HA config --
+  # 240GB that needs no API server. It is tagged so it can never be mistaken for
+  # a full one, and it deliberately does NOT publish the success metric, so the
+  # freshness alert fires exactly as if nothing had run.
+  local tags=(--tag homeserver)
+  [[ $CLUSTER_UP -eq 1 ]] || tags+=(--tag incomplete)
+
   log "backing up: ${PATHS[*]}"
-  restic backup "${PATHS[@]}" "${EXCLUDES[@]}" --tag homeserver --verbose
+  restic backup "${PATHS[@]}" "${EXCLUDES[@]}" "${tags[@]}" --verbose
   restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune
   rm -rf "$STAGE"
-  log "done"
+
+  if [[ $CLUSTER_UP -eq 1 ]]; then
+    publish_success_metric
+    log "done"
+  else
+    # Non-zero so systemd records a failure. The data that could be saved WAS
+    # saved; this exit code is the alarm, not a rollback.
+    log "done, but INCOMPLETE — cluster was unreachable; snapshot tagged 'incomplete'"
+    return 1
+  fi
+}
+
+# A backup job that fails silently is worse than no backup, because it looks
+# like one. node-exporter's textfile collector turns "the last run succeeded,
+# and when" into a metric Prometheus can alert on (BackupJobFailing /
+# BackupJobNeverRan in the monitoring repo). Written only AFTER restic exits 0.
+publish_success_metric() {
+  local dir=/var/lib/node_exporter/textfile_collector
+  [[ -d "$dir" ]] || { log "WARN: $dir missing — backup freshness is NOT monitored"; return 0; }
+  # Write-then-rename: the collector must never read a half-written file.
+  local tmp="$dir/.homeserver_backup.prom.$$"
+  {
+    echo '# HELP homeserver_backup_last_success_timestamp_seconds Unix time of the last successful restic backup.'
+    echo '# TYPE homeserver_backup_last_success_timestamp_seconds gauge'
+    echo "homeserver_backup_last_success_timestamp_seconds $(date +%s)"
+  } > "$tmp"
+  mv -f "$tmp" "$dir/homeserver_backup.prom"
+  chmod 644 "$dir/homeserver_backup.prom"
 }
 
 do_dry_run() {
-  stage_sqlite; stage_postgres; build_paths
+  check_cluster
+  stage_sqlite; build_paths
+  if [[ $CLUSTER_UP -eq 1 ]]; then stage_postgres; fi
   log "WOULD back up:"; printf '  %s\n' "${PATHS[@]}"
   log "excludes: ${EXCLUDES[*]}"
   have_repo && log "repo: ${RESTIC_REPOSITORY}" || log "repo: NOT CONFIGURED — no backup would run"
@@ -226,6 +326,10 @@ do_dry_run() {
 
 do_install() {
   command -v restic >/dev/null || { log "installing restic"; apt-get update -qq && apt-get install -y -qq restic sqlite3; }
+  # Where publish_success_metric drops the freshness gauge. node-exporter reads
+  # this directory via a hostPath mount (see the monitoring repo).
+  mkdir -p /var/lib/node_exporter/textfile_collector
+  chmod 755 /var/lib/node_exporter/textfile_collector
   cat > /etc/systemd/system/homeserver-backup.service <<'UNIT'
 [Unit]
 Description=Home server restic backup
