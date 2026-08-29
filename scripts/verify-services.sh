@@ -375,6 +375,21 @@ else
 fi
 
 # =========================================================================
+# 5f. Weather at the PHONE, not at the house
+#     met.no is pinned to the home coordinates, so it is wrong the moment the
+#     user leaves. The rest sensor re-renders its URL from the live tracker on
+#     every poll; if it goes stale or loses its Assist exposure the model
+#     quietly answers with house weather instead of saying it does not know.
+# =========================================================================
+lw=$(bash "$(dirname "$0")/setup-ha-location-weather.sh" --check 2>&1 || true)
+lw_state=$(printf '%s' "$lw" | grep -m1 'sensor.weather_at_my_location = ' | sed 's/.*= //')
+if printf '%s' "$lw" | grep -q 'exposed_to_assist=True' && [ -n "$lw_state" ]; then
+  record "Weather at phone" PASS "$lw_state"
+else
+  record "Weather at phone" FAIL "sensor missing, stale, or not exposed to Assist"
+fi
+
+# =========================================================================
 # 6. Piper -> Whisper voice round-trip (raw-socket Wyoming, no installs)
 # =========================================================================
 voice=$(python3 - <<'PY'
