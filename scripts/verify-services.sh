@@ -45,6 +45,28 @@ PLEX_TOKEN=$(kubectl -n monitoring get secret plex-exporter -o jsonpath='{.data.
 GRAFANA_PW=$(kubectl -n monitoring get secret grafana-admin -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d 2>/dev/null | tr -d '\r\n')
 
 # =========================================================================
+# 0. Host clock
+# =========================================================================
+# Added 2026-08-30: the host was found 63s fast with NO ntp client installed.
+# Skew this large silently corrupts Prometheus/Loki timestamps, k8s token
+# validity and restic snapshot times, so check it before anything else.
+if systemctl is-active --quiet chrony; then
+  off=$(chronyc tracking 2>/dev/null | awk -F: '/^System time/{print $2}' | awk '{print $1}')
+  synced=$(timedatectl show -p NTPSynchronized --value 2>/dev/null)
+  if [ -z "$off" ]; then
+    record "Host clock" FAIL "chrony running but tracking gave no offset"
+  elif [ "$synced" != "yes" ]; then
+    record "Host clock" FAIL "chrony up but clock not synchronised yet (offset ${off}s)"
+  elif awk -v o="$off" 'BEGIN{exit !(o<1.0)}'; then
+    record "Host clock" PASS "in sync, offset ${off}s from $(chronyc tracking | awk -F'[()]' '/^Reference ID/{print $2}')"
+  else
+    record "Host clock" FAIL "drifting: ${off}s off NTP -- chrony is not keeping up"
+  fi
+else
+  record "Host clock" FAIL "chrony not running -- clock will free-run; see scripts/setup-time-sync.sh"
+fi
+
+# =========================================================================
 # 1. Home Assistant
 # =========================================================================
 if [ -n "$HA_TOKEN" ]; then
