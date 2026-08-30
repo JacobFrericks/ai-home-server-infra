@@ -45,6 +45,28 @@ PLEX_TOKEN=$(kubectl -n monitoring get secret plex-exporter -o jsonpath='{.data.
 GRAFANA_PW=$(kubectl -n monitoring get secret grafana-admin -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d 2>/dev/null | tr -d '\r\n')
 
 # =========================================================================
+# 0. Host clock
+# =========================================================================
+# Added 2026-08-30: the host was found 63s fast with NO ntp client installed.
+# Skew this large silently corrupts Prometheus/Loki timestamps, k8s token
+# validity and restic snapshot times, so check it before anything else.
+if systemctl is-active --quiet chrony; then
+  off=$(chronyc tracking 2>/dev/null | awk -F: '/^System time/{print $2}' | awk '{print $1}')
+  synced=$(timedatectl show -p NTPSynchronized --value 2>/dev/null)
+  if [ -z "$off" ]; then
+    record "Host clock" FAIL "chrony running but tracking gave no offset"
+  elif [ "$synced" != "yes" ]; then
+    record "Host clock" FAIL "chrony up but clock not synchronised yet (offset ${off}s)"
+  elif awk -v o="$off" 'BEGIN{exit !(o<1.0)}'; then
+    record "Host clock" PASS "in sync, offset ${off}s from $(chronyc tracking | awk -F'[()]' '/^Reference ID/{print $2}')"
+  else
+    record "Host clock" FAIL "drifting: ${off}s off NTP -- chrony is not keeping up"
+  fi
+else
+  record "Host clock" FAIL "chrony not running -- clock will free-run; see scripts/setup-time-sync.sh"
+fi
+
+# =========================================================================
 # 1. Home Assistant
 # =========================================================================
 if [ -n "$HA_TOKEN" ]; then
@@ -334,6 +356,62 @@ else
 fi
 
 # =========================================================================
+# 5d. Assist can see WHERE THE USER IS
+#     The phone GPS reaches the model only through HA, and only for entities
+#     exposed to Assist. Without this the model answers "weather" from the
+#     search engine guessing at the house IP.
+# =========================================================================
+loc=$(bash "$(dirname "$0")/setup-assist-location.sh" --check 2>/dev/null || true)
+loc_off=$(printf "%s" "$loc" | grep -c "exposed_to_assist=False" || true)
+loc_on=$(printf "%s" "$loc" | grep -c "exposed_to_assist=True" || true)
+if [ "$loc_off" = 0 ] && [ "$loc_on" -gt 0 ]; then
+  record "Assist location" PASS "$loc_on entity(s) exposed: phone GPS reaches the model"
+else
+  record "Assist location" FAIL "$loc_off entity(s) NOT exposed to Assist"
+fi
+
+# =========================================================================
+# 5e. HA weather, and the container DNS it depends on
+#     Docker writes a container's /etc/resolv.conf from the HOST file at start.
+#     Containers started while the host had no DHCP lease get an EMPTY one and
+#     keep it for their whole life: no DNS, no cloud integrations, no met.no.
+#     Nothing logs an error at the container level, so check it directly.
+# =========================================================================
+dns_bad=""
+for c in $(docker ps --format '{{.Names}}' 2>/dev/null); do
+  n=$(docker exec "$c" cat /etc/resolv.conf 2>/dev/null | grep -c '^nameserver' || true)
+  [ "${n:-0}" -eq 0 ] && dns_bad="$dns_bad $c"
+done
+if [ -z "$dns_bad" ]; then
+  record "Container DNS" PASS "every docker container has a nameserver"
+else
+  record "Container DNS" FAIL "no nameserver in:$dns_bad (restart them; they booted with no lease)"
+fi
+
+wx=$(bash "$(dirname "$0")/setup-ha-weather.sh" --check 2>&1 || true)
+wx_line=$(printf '%s' "$wx" | grep -m1 '^  weather\.' | sed 's/^ *//')
+if printf '%s' "$wx" | grep -q 'exposed_to_assist=True'; then
+  record "HA weather" PASS "${wx_line:-exposed}"
+else
+  record "HA weather" FAIL "no weather entity exposed to Assist"
+fi
+
+# =========================================================================
+# 5f. Weather at the PHONE, not at the house
+#     met.no is pinned to the home coordinates, so it is wrong the moment the
+#     user leaves. The rest sensor re-renders its URL from the live tracker on
+#     every poll; if it goes stale or loses its Assist exposure the model
+#     quietly answers with house weather instead of saying it does not know.
+# =========================================================================
+lw=$(bash "$(dirname "$0")/setup-ha-location-weather.sh" --check 2>&1 || true)
+lw_state=$(printf '%s' "$lw" | grep -m1 'sensor.weather_at_my_location = ' | sed 's/.*= //')
+if printf '%s' "$lw" | grep -q 'exposed_to_assist=True' && [ -n "$lw_state" ]; then
+  record "Weather at phone" PASS "$lw_state"
+else
+  record "Weather at phone" FAIL "sensor missing, stale, or not exposed to Assist"
+fi
+
+# =========================================================================
 # 6. Piper -> Whisper voice round-trip (raw-socket Wyoming, no installs)
 # =========================================================================
 voice=$(python3 - <<'PY'
@@ -400,6 +478,25 @@ PY
 )
 record "Piper->Whisper voice" "${voice%%|*}" "${voice#*|}"
 
+# Added 2026-08-30 (audit M2): piper/whisper must NOT be reachable on the LAN.
+# They are published on 127.0.0.1 only; HA reaches them via localhost (net=host).
+# A regression (dropping the 127.0.0.1: bind) silently re-exposes two
+# unauthenticated voice services to the whole wifi.
+lan_ip=$(ip -4 addr show 2>/dev/null | awk '/inet 192\.168\./{print $2}' | cut -d/ -f1 | head -1)
+if [ -z "$lan_ip" ]; then
+  record "Voice ports LAN-private" FAIL "could not determine LAN IP to test"
+else
+  open_ports=""
+  for port in 10200 10300; do
+    timeout 2 bash -c "echo > /dev/tcp/$lan_ip/$port" 2>/dev/null && open_ports="$open_ports $port"
+  done
+  if [ -n "$open_ports" ]; then
+    record "Voice ports LAN-private" FAIL "reachable on $lan_ip:$open_ports -- loopback bind lost, LAN-exposed"
+  else
+    record "Voice ports LAN-private" PASS "10200/10300 refused on $lan_ip (loopback-only)"
+  fi
+fi
+
 # =========================================================================
 # 7. Plex
 # =========================================================================
@@ -460,6 +557,222 @@ except: print("ERR")')
 else
   if [ "$gh" = ok ]; then record "Grafana + datasources" PASS "db=ok (no creds for datasource test)"
   else record "Grafana + datasources" FAIL "db=$gh"; fi
+fi
+
+# =========================================================================
+# Backup mirror + restic
+# =========================================================================
+# These run unprivileged on purpose, so this script stays cron-safe as jacob.
+# Everything below reads /proc, /sys or the mounted filesystem -- no sudo.
+
+# RAID 1 health. [UU] means both members are present; [U_] or [_U] means the
+# mirror is degraded and running on a single ~6-year-old disk.
+if [ -e /proc/mdstat ] && grep -q "^md0" /proc/mdstat; then
+  md_flags="$(grep -o '\[[U_]*\]' /proc/mdstat | head -1)"
+  md_resync="$(grep -o 'resync = *[0-9.]*%' /proc/mdstat | head -1)"
+  if [ "$md_flags" = "[UU]" ]; then
+    record "RAID mirror (md0)" PASS "both disks up $md_flags${md_resync:+, $md_resync}"
+  else
+    record "RAID mirror (md0)" FAIL "DEGRADED $md_flags -- replace the failed disk"
+  fi
+else
+  record "RAID mirror (md0)" FAIL "md0 not assembled"
+fi
+
+# The mirror is mounted with nofail, so a missing array does NOT stop the boot.
+# That is deliberate, and it is exactly why this check has to exist.
+if mountpoint -q /srv/backup; then
+  bk_use="$(df -h --output=pcent,avail /srv/backup | tail -1 | tr -s ' ')"
+  record "Backup volume" PASS "/srv/backup mounted,${bk_use} free"
+else
+  record "Backup volume" FAIL "/srv/backup NOT mounted -- nightly backup cannot run"
+fi
+
+# Timer enabled is not the same as backups happening; freshness is checked next.
+if systemctl is-enabled --quiet homeserver-backup.timer 2>/dev/null; then
+  record "Backup timer" PASS "homeserver-backup.timer enabled"
+else
+  record "Backup timer" FAIL "homeserver-backup.timer not enabled"
+fi
+
+# Freshness, read from the metric the backup job publishes for node-exporter.
+# A silently failing backup looks identical to a working one until you need it.
+BK_METRIC=/var/lib/node_exporter/textfile_collector/homeserver_backup.prom
+if [ -r "$BK_METRIC" ]; then
+  bk_ts="$(awk '/^homeserver_backup_last_success_timestamp_seconds/{print $2}' "$BK_METRIC")"
+  bk_age=$(( ($(date +%s) - ${bk_ts:-0}) / 3600 ))
+  if [ "${bk_ts:-0}" -gt 0 ] && [ "$bk_age" -lt 48 ]; then
+    record "Backup freshness" PASS "last success ${bk_age}h ago"
+  else
+    record "Backup freshness" FAIL "last success ${bk_age}h ago (>48h)"
+  fi
+else
+  record "Backup freshness" FAIL "no success metric at $BK_METRIC"
+fi
+
+
+# =========================================================================
+# Offsite backup (S3 Glacier Instant Retrieval)
+# =========================================================================
+# The RAID 1 mirror survives a dead disk. It does not survive a fire, a theft,
+# or a delete, and both members are ~6 years old and were bought together. These
+# checks cover the copy that does survive those -- and, just as importantly, the
+# BUCKET SETTINGS that keep it cheap and private. A misconfigured lifecycle rule
+# does not break anything visibly; it just quietly bills 5x.
+OFFSITE_METRIC=/var/lib/node_exporter/textfile_collector/homeserver_offsite.prom
+OFFSITE_BUCKET=homeserver-restic-offsite-p5ke0zp2me
+
+for t in critical bulk maintain; do
+  if systemctl is-enabled --quiet "homeserver-offsite-$t.timer" 2>/dev/null; then
+    record "Offsite timer ($t)" PASS "homeserver-offsite-$t.timer enabled"
+  else
+    record "Offsite timer ($t)" FAIL "homeserver-offsite-$t.timer not enabled"
+  fi
+done
+
+# Freshness per tier. The thresholds match the Grafana rules in the k8s repo
+# (OffsiteCriticalStale 36h, OffsiteBulkStale 10d) so the two cannot disagree.
+if [ -r "$OFFSITE_METRIC" ]; then
+  for spec in "critical:36" "bulk:240"; do
+    t="${spec%%:*}"; limit="${spec##*:}"
+    ts="$(awk -v t="$t" -F'[ {}]' '$0 ~ "tier=\""t"\"" {print $NF}' "$OFFSITE_METRIC" 2>/dev/null | tail -1)"
+    if [ -n "${ts:-}" ] && [ "${ts:-0}" -gt 0 ]; then
+      age=$(( ($(date +%s) - ts) / 3600 ))
+      if [ "$age" -lt "$limit" ]; then
+        record "Offsite freshness ($t)" PASS "last copy ${age}h ago (limit ${limit}h)"
+      else
+        record "Offsite freshness ($t)" FAIL "last copy ${age}h ago (>${limit}h)"
+      fi
+    else
+      record "Offsite freshness ($t)" FAIL "no timestamp for tier '$t' in $OFFSITE_METRIC"
+    fi
+  done
+else
+  record "Offsite freshness (critical)" FAIL "no metric at $OFFSITE_METRIC"
+  record "Offsite freshness (bulk)"     FAIL "no metric at $OFFSITE_METRIC"
+fi
+
+# Bucket settings. Credentials are sourced into a subshell and never echoed.
+if [ -r "$STACK_DIR/.env" ] && command -v aws >/dev/null 2>&1; then
+  ob_state="$(
+    set -a; . "$STACK_DIR/.env" >/dev/null 2>&1; set +a
+    ver="$(aws s3api get-bucket-versioning --bucket "$OFFSITE_BUCKET" --query Status --output text 2>/dev/null)"
+    pab="$(aws s3api get-public-access-block --bucket "$OFFSITE_BUCKET" \
+             --query "PublicAccessBlockConfiguration.[BlockPublicAcls,IgnorePublicAcls,BlockPublicPolicy,RestrictPublicBuckets]" \
+             --output text 2>/dev/null | tr -d " \t")"
+    lc="$(aws s3api get-bucket-lifecycle-configuration --bucket "$OFFSITE_BUCKET" --output json 2>/dev/null | grep -c GLACIER_IR)"
+    echo "$ver|$pab|$lc"
+  )"
+  IFS='|' read -r ob_ver ob_pab ob_lc <<< "$ob_state"
+  problems=""
+  [ "$ob_ver" = "Enabled" ]     || problems="$problems versioning=$ob_ver"
+  [ "$ob_pab" = "TrueTrueTrueTrue" ] || problems="$problems public-access-block=$ob_pab"
+  [ "${ob_lc:-0}" -ge 1 ]       || problems="$problems no-GLACIER_IR-lifecycle"
+  if [ -z "$problems" ]; then
+    record "Offsite bucket config" PASS "versioned, private, GLACIER_IR lifecycle"
+  else
+    record "Offsite bucket config" FAIL "issues:$problems"
+  fi
+else
+  record "Offsite bucket config" FAIL "cannot read $STACK_DIR/.env or aws CLI missing"
+fi
+
+# =========================================================================
+# Host boot readiness
+# =========================================================================
+# A user-scoped NIC profile once left this box up-but-unreachable for 38 hours
+# after an automatic reboot: no network, so no k3s, so a silently failed backup.
+# The host looked healthy from the console and dead from everywhere else.
+if bootchk="$("$STACK_DIR/scripts/setup-host-boot.sh" --check 2>&1)"; then
+  record "Host boot readiness" PASS "NIC system-wide, default route, k3s+sshd enabled"
+else
+  record "Host boot readiness" FAIL "$(printf '%s' "$bootchk" | grep -i warn | head -1)"
+fi
+
+# =========================================================================
+# Alert delivery  (Grafana-native rules -> ntfy on the calendar Pi)
+# =========================================================================
+# This block exists because the alerts were, for five days, unable to notify
+# anyone at all: #8 shipped them as a PrometheusRule, and this cluster runs
+# alertmanager.enabled=false on purpose, so they were evaluated and dropped.
+# "The rule exists" was true the whole time and told us nothing. These checks
+# assert the DELIVERY PATH, which is the part that was actually broken.
+#
+# The ntfy topic is the only access control on the channel, so it is read at
+# runtime and never printed -- this repo is public.
+if [ -n "$GRAFANA_PW" ]; then
+  gapi() { curl -s --max-time 15 -u "admin:$GRAFANA_PW" "http://${GRAFANA_EP}$1"; }
+
+  # -- 1. both ntfy contact points provisioned, and the severity route present
+  read -r cp_n route_ok < <(gapi /api/v1/provisioning/contact-points | python3 -c '
+import sys,json
+try: cps=json.load(sys.stdin)
+except Exception: print("0 no"); raise SystemExit
+names={c.get("name") for c in cps}
+print(len(names & {"ntfy-critical","ntfy-warning"}), "yes" if {"ntfy-critical","ntfy-warning"} <= names else "no")')
+  if [ "${cp_n:-0}" = 2 ]; then
+    record "Alert contact points" PASS "ntfy-critical + ntfy-warning provisioned"
+  else
+    record "Alert contact points" FAIL "expected 2 ntfy contact points, found ${cp_n:-0}"
+  fi
+
+  pol=$(gapi /api/v1/provisioning/policies | python3 -c '
+import sys,json
+try: p=json.load(sys.stdin)
+except Exception: print("ERR"); raise SystemExit
+d=p.get("receiver","")
+crit=[r.get("receiver") for r in (p.get("routes") or [])
+      if ["severity","=","critical"] in (r.get("object_matchers") or [])]
+print("%s->%s" % (d, crit[0]) if crit else "NOROUTE")')
+  case "$pol" in
+    "ntfy-warning->ntfy-critical") record "Alert routing" PASS "default ntfy-warning, severity=critical to ntfy-critical" ;;
+    NOROUTE) record "Alert routing" FAIL "no severity=critical route -- criticals would go to the warning channel" ;;
+    *)       record "Alert routing" FAIL "unexpected policy tree: $pol" ;;
+  esac
+
+  # -- 2. every rule actually EVALUATES. A rule whose query errors is a rule
+  #       that will never fire, and it looks exactly like a quiet one.
+  read -r r_tot r_bad < <(gapi /api/prometheus/grafana/api/v1/rules | python3 -c '
+import sys,json
+try: gs=json.load(sys.stdin)["data"]["groups"]
+except Exception: print("0 0"); raise SystemExit
+rs=[r for g in gs for r in g.get("rules",[])]
+print(len(rs), sum(1 for r in rs if r.get("health")!="ok"))')
+  if [ "${r_tot:-0}" -ge 11 ] && [ "${r_bad:-1}" -eq 0 ]; then
+    record "Alert rules healthy" PASS "$r_tot rules, all evaluating"
+  else
+    record "Alert rules healthy" FAIL "${r_tot:-0} rules, ${r_bad:-?} with an evaluation error"
+  fi
+
+  # -- 3. the topic Grafana publishes to still EXISTS on the Pi.
+  #       Rebuilding the Pi regenerates a random topic unless one is supplied,
+  #       and ntfy is deny-all: the old topic would then 403 and every alert
+  #       would vanish silently. A GET is used, not a POST, so this check never
+  #       buzzes the phone. 200 = topic reachable and permitted, 403 = drift.
+  ntfy_url=$(gapi /api/v1/provisioning/contact-points | python3 -c '
+import sys,json
+try: cps=json.load(sys.stdin)
+except Exception: raise SystemExit
+for c in cps:
+    if c.get("name")=="ntfy-critical":
+        print(c.get("settings",{}).get("url","")); break')
+  if [ -n "$ntfy_url" ]; then
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${ntfy_url}/json?poll=1&since=1s")
+    ntfy_host=${ntfy_url#http://}; ntfy_host=${ntfy_host%%/*}
+    case "$code" in
+      200) record "ntfy topic reachable" PASS "$ntfy_host accepted the configured topic" ;;
+      403) record "ntfy topic reachable" FAIL "$ntfy_host denied it -- topic drift, alerts are being dropped" ;;
+      000) record "ntfy topic reachable" FAIL "$ntfy_host unreachable (Pi down, or ufw)" ;;
+      *)   record "ntfy topic reachable" FAIL "$ntfy_host returned HTTP $code" ;;
+    esac
+  else
+    record "ntfy topic reachable" FAIL "ntfy-critical contact point has no url"
+  fi
+else
+  record "Alert contact points" FAIL "no grafana admin password; cannot check"
+  record "Alert routing"        FAIL "no grafana admin password; cannot check"
+  record "Alert rules healthy"  FAIL "no grafana admin password; cannot check"
+  record "ntfy topic reachable" FAIL "no grafana admin password; cannot check"
 fi
 
 # =========================================================================

@@ -19,11 +19,17 @@ set -uo pipefail
 # verify-services.sh already hit once.
 export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/config}
 
-PASS=0; FAIL=0
+PASS=0; FAIL=0; PEND=0
 record() {
   local name="$1" result="$2" detail="$3"
   printf '%-30s %-6s %s\n' "$name" "$result" "$detail"
-  [[ "$result" == PASS ]] && PASS=$((PASS+1)) || FAIL=$((FAIL+1))
+  # PEND is a known-benign wait state (e.g. a chart bump landed in git but
+  # hasn't been manually synced yet) -- only FAIL should turn the run red.
+  case "$result" in
+    FAIL) FAIL=$((FAIL+1)) ;;
+    PEND) PEND=$((PEND+1)) ;;
+    *)    PASS=$((PASS+1)) ;;
+  esac
 }
 
 echo "================= k3s CLUSTER — STRUCTURAL VERIFICATION ================="
@@ -207,6 +213,57 @@ else
   record "Certificates" FAIL "$certbad"
 fi
 
+# --- 15. record-only Argo apps: the one-time baseline actually happened -----
+# cilium.yaml / argo-cd.yaml describe a ONE-TIME manual sync to give these
+# apps a real baseline -- without it, an Application that has never synced
+# reports every resource OutOfSync forever, which check 4's record-only
+# waiver then hides permanently. That is drift detection that is dead, not
+# drift detection that passed. This check names that state instead of
+# silently waiving it. A pending chart bump (git ahead of what's deployed) is
+# expected and reported as PEND, not FAIL -- upgrading these is a deliberate
+# manual act, not something this script should nag red about.
+baseline=$(kubectl -n argocd get app -o json 2>/dev/null | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+for a in d.get("items",[]):
+    ann=(a["metadata"].get("annotations") or {})
+    if ann.get("homeserver.local/sync-mode")!="record-only":
+        continue
+    name=a["metadata"]["name"]
+    status=a.get("status",{})
+    history=status.get("history") or []
+    opstate=status.get("operationState")
+    sync=status.get("sync",{})
+    revision=sync.get("revision")
+    target=a.get("spec",{}).get("source",{}).get("targetRevision")
+    syncstatus=sync.get("status")
+    resources=status.get("resources") or []
+    oos=[r.get("kind","?")+"/"+r.get("name","?") for r in resources if r.get("status") not in ("Synced", None)]
+    if not history and not opstate:
+        print(f"FAIL\t{name}\tNEVER SYNCED ({len(oos)}/{len(resources)} OutOfSync) — drift detection is dead")
+    elif revision != target:
+        print(f"PEND\t{name}\tgit wants {target}, deployed {revision} — manual sync required")
+    elif syncstatus != "Synced":
+        detail=",".join(oos[:5]) if oos else "unknown"
+        print(f"FAIL\t{name}\treal drift: {detail}")
+    else:
+        print(f"PASS\t{name}\tbaseline established, no drift")
+' 2>/dev/null)
+nb=$(echo "$baseline" | grep -c .)
+if [[ "$nb" -eq 0 ]]; then
+  record "Argo record-only baseline" PASS "no record-only apps"
+else
+  bfail=$(echo "$baseline" | awk -F'\t' '$1=="FAIL"{print $2": "$3}' | tr '\n' ';' | sed 's/;$//')
+  bpend=$(echo "$baseline" | awk -F'\t' '$1=="PEND"{print $2": "$3}' | tr '\n' ';' | sed 's/;$//')
+  if [[ -n "$bfail" ]]; then
+    record "Argo record-only baseline" FAIL "$bfail"
+  elif [[ -n "$bpend" ]]; then
+    record "Argo record-only baseline" PEND "$bpend"
+  else
+    record "Argo record-only baseline" PASS "$nb record-only apps: baseline established, no drift"
+  fi
+fi
+
 echo "------------------------------------------------------------------------"
-echo "TOTAL: $PASS passed, $FAIL failed   ($(date '+%Y-%m-%d %H:%M:%S %Z'))"
+echo "TOTAL: $PASS passed, $PEND pending, $FAIL failed   ($(date '+%Y-%m-%d %H:%M:%S %Z'))"
 [[ "$FAIL" -eq 0 ]]
