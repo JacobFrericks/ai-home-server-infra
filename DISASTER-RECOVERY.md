@@ -43,6 +43,94 @@ If you have a backup of the `open-webui` volume **and** the matching `.env`:
 
 Chat history and uploaded images survive this path.
 
+## Restoring from the offsite copy (S3 Glacier Instant Retrieval)
+
+Use this when `/srv/backup` is gone or unreachable: the house burned, the box was
+stolen, both mirror disks died, or someone deleted the repository. If the local
+mirror is intact, restore from it instead — it is free and faster.
+
+**You need exactly two things, and neither is on the server:**
+
+1. `RESTIC_PASSWORD` — in the password manager. It is the encryption key. Without
+   it every object in S3 is unreadable noise and nothing below will work.
+2. AWS credentials that can read the bucket. If the IAM user is also lost, make a
+   new one from `aws/iam-policy.json` in this repo.
+
+The bucket, region and repo path are **not** secret and are recorded in
+`aws/README.md`.
+
+```
+export AWS_ACCESS_KEY_ID=...        # from the password manager
+export AWS_SECRET_ACCESS_KEY=...
+export AWS_DEFAULT_REGION=us-west-2
+export RESTIC_PASSWORD=...          # from the password manager
+export RESTIC_REPOSITORY=s3:s3.us-west-2.amazonaws.com/homeserver-restic-offsite-p5ke0zp2me/restic
+export RESTIC_CACHE_DIR=/var/cache/restic   # without this restic re-downloads
+                                            # the index on every command, billed
+                                            # as egress at $0.09/GB
+restic snapshots --compact
+```
+
+Two tiers are stored, tagged `critical` and `bulk`:
+
+| Tag | What | Size | Restore first? |
+|---|---|---|---|
+| `critical` | sealed-secrets master key, staged DBs, HA config, PVCs, secrets | ~6.5 GiB | **yes** |
+| `bulk` | `/home/jacob/backup` — photos, music, documents | ~231 GiB | after |
+
+### Restore order that actually works
+
+**1. The sealed-secrets master key, before anything else.** Every Secret in the
+GitOps repo is a SealedSecret encrypted to this key. Without it a rebuilt cluster
+comes up with workloads that can never start, and no amount of application data
+helps.
+
+```
+restic restore latest --tag critical \
+  --include /var/lib/backup-staging/sealed-secrets-key.yaml \
+  --target /tmp/restore
+kubectl apply -f /tmp/restore/var/lib/backup-staging/sealed-secrets-key.yaml
+kubectl -n kube-system rollout restart deploy sealed-secrets-controller
+```
+
+**2. The rest of the critical tier.**
+
+```
+restic restore latest --tag critical --target /
+```
+
+Databases land in `/var/lib/backup-staging/` as *dumps*, not live files:
+
+- `webui.db` — a `VACUUM INTO` copy. Put it back at the Open WebUI PVC path.
+- `immich-db.sql` / `immich-private-immich-postgres.sql.gz` — replay with
+  `psql`, do not copy over a running data directory.
+
+**3. The bulk tier, last.** It is 231 GiB and costs money to pull down:
+retrieval at $0.03/GB plus egress at $0.09/GB, roughly **$28** for the whole
+thing. That is the insurance paying out. Restore only what you need if you can.
+
+```
+restic restore latest --tag bulk --target /
+```
+
+### Cost and speed notes
+
+- Data lives in **Glacier Instant Retrieval**, so reads work immediately. There
+  is no thaw step and no waiting.
+- `restic check` is cheap: index and snapshot metadata are deliberately kept in
+  STANDARD by the lifecycle rule in `aws/bucket-lifecycle.json`.
+- `restic check --read-data` is **not** cheap — it downloads everything. Use
+  `--read-data-subset=5%` if you want data-level assurance.
+- Bucket versioning is on with a 30-day window, so an accidental delete inside
+  that window is recoverable through the S3 console, not through restic.
+
+### Verifying the offsite copy without a disaster
+
+```
+sudo ./scripts/setup-offsite-backup.sh --check   # read-only: creds, bucket, lifecycle
+sudo ./scripts/verify-services.sh                # includes offsite freshness + bucket config
+```
+
 ## Path B — rebuild from scratch (no volume backup)
 
 Do these **in order** — steps 5–7 are the bootstrap dependencies:
