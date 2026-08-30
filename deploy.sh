@@ -13,12 +13,14 @@ cd "$(dirname "$(readlink -f "$0")")"
 log() { echo "[deploy $(date -Is)] $*"; }
 
 # 1. Pull the latest infra from git.
-#    Skipped automatically until a remote is configured (GitHub auth pending),
-#    so for now the stack is applied from the local files already on disk.
+#    Always pull origin/main explicitly. A bare `git pull --ff-only` takes its
+#    branch from whatever is checked out, so a stray feature-branch checkout
+#    made every subsequent deploy die on "no tracking information" while the
+#    stack quietly drifted from main. Naming the branch removes that failure.
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
    && git remote get-url origin >/dev/null 2>&1; then
-  log "git pull --ff-only"
-  git pull --ff-only
+  log "git pull --ff-only origin main"
+  git pull --ff-only origin main
 else
   log "no git remote configured yet — skipping git pull, using local files"
 fi
@@ -31,42 +33,26 @@ docker compose pull --ignore-buildable
 log "docker compose up -d --build"
 docker compose up -d --build
 
-# 2b. Bring up the separate monitoring stack (Prometheus/Loki/Grafana), if its
-#     server-only secrets are in place. It's a distinct compose project so it
-#     can be recreated independently of the app stack above.
-if [ -f monitoring/.env ] && [ -f monitoring/prometheus/ha_token ]; then
-  log "docker compose -p monitoring pull"
-  docker compose -p monitoring -f monitoring/docker-compose.yml pull
-  log "docker compose -p monitoring up -d"
-  docker compose -p monitoring -f monitoring/docker-compose.yml up -d
-else
-  log "monitoring/.env or monitoring/prometheus/ha_token missing — skipping monitoring stack (see monitoring/README.md)"
-fi
-
-# 3. Health check: Open WebUI, Ollama, Home Assistant, and (once cut over) Plex.
+# 3. Health check: exactly the services this script deploys, and nothing else.
+#    Everything below used to be checked here and no longer belongs: Open WebUI
+#    (:8080), Ollama (via `compose exec`), ComfyUI (:8188) and Grafana (:3000)
+#    all moved into k3s during the migration. They are not compose services and
+#    are not on those host ports, so those checks failed unconditionally --
+#    two of them setting ok=0, which made a successful deploy report
+#    HEALTH CHECK FAILED. The cluster is covered by scripts/verify-services.sh.
 log "health check"
 ok=1
-curl -fsS -o /dev/null "http://127.0.0.1:8080/health" \
-  || curl -fsS -o /dev/null "http://127.0.0.1:8080/" \
-  || ok=0
-docker compose exec -T ollama ollama list >/dev/null 2>&1 || ok=0
-curl -fsS -o /dev/null "http://127.0.0.1:8123/" || ok=0
-# Plex check is best-effort: the plex service stays undeployed until the
-# manual cutover runbook (README.md) has been run, so don't fail deploys
-# over it — just warn.
-curl -fsS -o /dev/null "http://127.0.0.1:32400/identity" \
-  || log "warning: Plex :32400 not responding (expected until cutover runbook is run)"
-# ComfyUI check is best-effort: image gen is optional and its own thing; don't
-# fail deploys over it — just warn (e.g. if the SDXL checkpoint isn't in place).
-curl -fsS -o /dev/null "http://127.0.0.1:8188/system_stats" \
-  || log "warning: ComfyUI :8188 not responding (image generation; see README)"
-# Grafana check is best-effort too: the monitoring stack only comes up once
-# its server-only secrets exist (see step 2b above).
-curl -fsS -o /dev/null "http://127.0.0.1:3000/api/health" \
-  || log "warning: Grafana :3000 not responding (monitoring stack may not be deployed yet)"
+curl -fsS -o /dev/null "http://127.0.0.1:8123/" || { log "FAIL: Home Assistant :8123"; ok=0; }
+curl -fsS -o /dev/null "http://127.0.0.1:32400/identity" || { log "FAIL: Plex :32400"; ok=0; }
+for svc in piper whisper; do
+  [ "$(docker compose ps -q "$svc" | wc -l)" -eq 1 ] \
+    && [ "$(docker inspect -f '{{.State.Running}}' "$(docker compose ps -q "$svc")")" = "true" ] \
+    || { log "FAIL: compose service $svc is not running"; ok=0; }
+done
 
 if [ "$ok" -ne 1 ]; then
   log "HEALTH CHECK FAILED — inspect: docker compose ps / docker compose logs"
+  log "full picture (cluster included): ./scripts/verify-services.sh"
   log "rollback: git reset --hard <previous-sha> && ./deploy.sh"
   exit 1
 fi
