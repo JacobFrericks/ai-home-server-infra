@@ -478,6 +478,25 @@ PY
 )
 record "Piper->Whisper voice" "${voice%%|*}" "${voice#*|}"
 
+# Added 2026-08-30 (audit M2): piper/whisper must NOT be reachable on the LAN.
+# They are published on 127.0.0.1 only; HA reaches them via localhost (net=host).
+# A regression (dropping the 127.0.0.1: bind) silently re-exposes two
+# unauthenticated voice services to the whole wifi.
+lan_ip=$(ip -4 addr show 2>/dev/null | awk '/inet 192\.168\./{print $2}' | cut -d/ -f1 | head -1)
+if [ -z "$lan_ip" ]; then
+  record "Voice ports LAN-private" FAIL "could not determine LAN IP to test"
+else
+  open_ports=""
+  for port in 10200 10300; do
+    timeout 2 bash -c "echo > /dev/tcp/$lan_ip/$port" 2>/dev/null && open_ports="$open_ports $port"
+  done
+  if [ -n "$open_ports" ]; then
+    record "Voice ports LAN-private" FAIL "reachable on $lan_ip:$open_ports -- loopback bind lost, LAN-exposed"
+  else
+    record "Voice ports LAN-private" PASS "10200/10300 refused on $lan_ip (loopback-only)"
+  fi
+fi
+
 # =========================================================================
 # 7. Plex
 # =========================================================================
