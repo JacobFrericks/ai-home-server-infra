@@ -53,6 +53,13 @@ STAGE=/var/lib/backup-staging          # consistent copies land here first
 KUBECONFIG_PATH=/etc/rancher/k3s/k3s.yaml
 export KUBECONFIG="$KUBECONFIG_PATH"
 
+# systemd starts this with no $HOME, and restic finds its cache via
+# $XDG_CACHE_HOME or $HOME. Every run since this timer was installed has logged
+# "unable to open cache" and rebuilt its index from scratch. Harmless against a
+# local repo beyond the wasted time; not harmless once the same script family
+# talks to S3, where a cache miss is billed egress.
+export RESTIC_CACHE_DIR="${RESTIC_CACHE_DIR:-/var/cache/restic}"
+
 log() { printf '[backup] %s\n' "$*"; }
 die() { printf '[backup] ERROR: %s\n' "$*" >&2; exit 1; }
 
@@ -209,29 +216,49 @@ stage_postgres() {
   done
 }
 
-build_paths() {
-  PATHS=("$STAGE")
+# --- what goes in each tier -------------------------------------------------
+# Two tiers, because an offsite copy has to move at two different speeds.
+#
+#   critical  ~6.5GB  the sealed-secrets master key, the staged databases, the
+#                     configs and the secrets. Irreplaceable AND changes daily,
+#                     so it is cheap enough to push to S3 every night.
+#   bulk      ~234GB  /home/jacob/backup: photos, music, documents, the old
+#                     PC's archive. Irreplaceable but nearly static, so it goes
+#                     offsite weekly.
+#
+# Both land in the SAME local repository, so restic still deduplicates across
+# them and nothing about local restore changes. The split exists so that
+# `restic copy` has something to select on -- you cannot copy half a snapshot,
+# and pushing 234GB to S3 every night to protect 6.5GB of churn is waste.
+#
+# The tags these produce are load-bearing: scripts/setup-offsite-backup.sh
+# selects on them. Renaming a tier means changing both files.
+build_critical_paths() {
+  CRITICAL_PATHS=("$STAGE")
   # Home Assistant: config + entity registry. .storage/*.json are written
   # atomically, so they are safe to copy live.
-  PATHS+=(/home/jacob/Documents/homeassistant)
+  CRITICAL_PATHS+=(/home/jacob/Documents/homeassistant)
   # The AI's persistent memory, and ComfyUI's own data.
   local p
   for claim in memory-data comfyui-data; do
-    p="$(pvc_path ai-stack "$claim")"; [[ -n "$p" ]] && PATHS+=("$p")
+    p="$(pvc_path ai-stack "$claim")"; [[ -n "$p" ]] && CRITICAL_PATHS+=("$p")
   done
-  # Immich's ORIGINALS only. The library is an external read-only mount, so
-  # these files are the irreplaceable half; everything Immich derives from them
-  # is excluded below.
-  [[ -d /home/jacob/backup/Jacob/untitled ]] && PATHS+=(/home/jacob/backup/Jacob/untitled)
   # Server-only secrets (git-ignored by design).
-  [[ -f "$ENV_FILE" ]] && PATHS+=("$ENV_FILE")
-  [[ -f "$STACK_DIR/monitoring/.env" ]] && PATHS+=("$STACK_DIR/monitoring/.env")
-  [[ -d "$STACK_DIR/prompts" ]] && PATHS+=("$STACK_DIR/prompts")
+  [[ -f "$ENV_FILE" ]] && CRITICAL_PATHS+=("$ENV_FILE")
+  [[ -f "$STACK_DIR/monitoring/.env" ]] && CRITICAL_PATHS+=("$STACK_DIR/monitoring/.env")
+  [[ -d "$STACK_DIR/prompts" ]] && CRITICAL_PATHS+=("$STACK_DIR/prompts")
+}
+
+build_bulk_paths() {
+  BULK_PATHS=()
   # Photos, documents and the old PC's archive (~234GB). These are ORIGINALS,
   # not a copy of something else: they were moved off the WD drives when those
-  # became the RAID mirror, so the NVMe holds the only copy. Immich reads this
-  # tree as a read-only external library, so it is not duplicated in any PVC.
-  [[ -d /home/jacob/backup ]] && PATHS+=(/home/jacob/backup)
+  # became the RAID mirror, so the NVMe holds the only copy.
+  #
+  # Immich's read-only external library (Jacob/untitled, ~51GB) lives INSIDE
+  # this path. It used to be listed separately to document that, which bought
+  # nothing but a second tree walk over the same bytes.
+  [[ -d /home/jacob/backup ]] && BULK_PATHS+=(/home/jacob/backup)
 }
 
 # Deliberately excluded, with reasons:
@@ -246,7 +273,7 @@ build_paths() {
 #                   data that is derived, not authored. After a restore, run
 #                   the thumbnail + transcode jobs. The PRISTINE COPY is
 #                   excluded for the same reason -- it is a byte-identical
-#                   duplicate of a path already in PATHS, so including it would
+#                   duplicate of a path already in BULK_PATHS, so including it would
 #                   double the photo bytes in every snapshot for no recovery
 #                   value. (restic dedupes, but the path list should still say
 #                   what it means.)
@@ -269,19 +296,33 @@ do_backup() {
   command -v restic >/dev/null || die "restic not installed; run --install first"
   restic snapshots >/dev/null 2>&1 || { log "initialising repo"; restic init; }
   check_cluster
-  stage_sqlite; build_paths
+  stage_sqlite; build_critical_paths; build_bulk_paths
   if [[ $CLUSTER_UP -eq 1 ]]; then stage_postgres; fi
 
   # A run without the cluster still saves the photos, documents and HA config --
-  # 240GB that needs no API server. It is tagged so it can never be mistaken for
+  # 234GB that needs no API server. It is tagged so it can never be mistaken for
   # a full one, and it deliberately does NOT publish the success metric, so the
   # freshness alert fires exactly as if nothing had run.
-  local tags=(--tag homeserver)
-  [[ $CLUSTER_UP -eq 1 ]] || tags+=(--tag incomplete)
+  local common=(--tag homeserver)
+  [[ $CLUSTER_UP -eq 1 ]] || common+=(--tag incomplete)
 
-  log "backing up: ${PATHS[*]}"
-  restic backup "${PATHS[@]}" "${EXCLUDES[@]}" "${tags[@]}" --verbose
-  restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune
+  log "backing up CRITICAL tier: ${CRITICAL_PATHS[*]}"
+  restic backup "${CRITICAL_PATHS[@]}" "${EXCLUDES[@]}" "${common[@]}" --tag critical --verbose
+
+  if [[ ${#BULK_PATHS[@]} -gt 0 ]]; then
+    log "backing up BULK tier: ${BULK_PATHS[*]}"
+    restic backup "${BULK_PATHS[@]}" "${EXCLUDES[@]}" "${common[@]}" --tag bulk --verbose
+  else
+    log "WARN: bulk tier is EMPTY — /home/jacob/backup is missing"
+  fi
+
+  # Retention is applied per tier. --group-by '' collapses each tier into a
+  # single group: the default grouping is by host+paths, and a cluster-down run
+  # changes the path list, which would silently create a second group with its
+  # own independent retention and quietly keep snapshots forever.
+  restic forget --tag critical --group-by '' --keep-daily 7 --keep-weekly 4 --keep-monthly 6
+  restic forget --tag bulk     --group-by '' --keep-daily 7 --keep-weekly 4 --keep-monthly 6
+  restic prune
   rm -rf "$STAGE"
 
   if [[ $CLUSTER_UP -eq 1 ]]; then
@@ -290,7 +331,7 @@ do_backup() {
   else
     # Non-zero so systemd records a failure. The data that could be saved WAS
     # saved; this exit code is the alarm, not a rollback.
-    log "done, but INCOMPLETE — cluster was unreachable; snapshot tagged 'incomplete'"
+    log "done, but INCOMPLETE — cluster was unreachable; snapshots tagged 'incomplete'"
     return 1
   fi
 }
@@ -315,12 +356,13 @@ publish_success_metric() {
 
 do_dry_run() {
   check_cluster
-  stage_sqlite; build_paths
+  stage_sqlite; build_critical_paths; build_bulk_paths
   if [[ $CLUSTER_UP -eq 1 ]]; then stage_postgres; fi
-  log "WOULD back up:"; printf '  %s\n' "${PATHS[@]}"
+  log "WOULD back up CRITICAL tier (offsite nightly):"; printf '  %s\n' "${CRITICAL_PATHS[@]}"
+  log "WOULD back up BULK tier (offsite weekly):";      printf '  %s\n' "${BULK_PATHS[@]}"
   log "excludes: ${EXCLUDES[*]}"
   have_repo && log "repo: ${RESTIC_REPOSITORY}" || log "repo: NOT CONFIGURED — no backup would run"
-  du -sh "${PATHS[@]}" 2>/dev/null | sed 's/^/  /'
+  du -sh "${CRITICAL_PATHS[@]}" "${BULK_PATHS[@]}" 2>/dev/null | sed 's/^/  /'
   rm -rf "$STAGE"
 }
 
@@ -328,7 +370,7 @@ do_install() {
   command -v restic >/dev/null || { log "installing restic"; apt-get update -qq && apt-get install -y -qq restic sqlite3; }
   # Where publish_success_metric drops the freshness gauge. node-exporter reads
   # this directory via a hostPath mount (see the monitoring repo).
-  mkdir -p /var/lib/node_exporter/textfile_collector
+  mkdir -p /var/lib/node_exporter/textfile_collector "$RESTIC_CACHE_DIR"
   chmod 755 /var/lib/node_exporter/textfile_collector
   cat > /etc/systemd/system/homeserver-backup.service <<'UNIT'
 [Unit]
