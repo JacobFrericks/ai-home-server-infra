@@ -58,8 +58,20 @@ fi
 # --- 3. containers actually READY, not merely Running ------------------------
 # A pod can sit Running with 0/1 containers ready indefinitely. Counting phase
 # alone hides exactly that.
+#
+# Skip pods that have already finished. A Succeeded/Completed Job pod reports
+# READY 0/1 forever -- that is what "done" looks like, not a fault. Without this
+# the nightly Renovate CronJob (30 4 * * *) leaves one behind and this check
+# FAILs every single day until the pod is garbage-collected, which trains the
+# reader to ignore a red line. Observed 2026-08-30:
+#   Containers ready  FAIL  renovate/renovate-29801370-4c4v9(0/1)
+# with that pod in phase Succeeded.
+#
+# A genuinely broken pod is still caught: Failed/CrashLoopBackOff/Pending are
+# NOT skipped here, and check 2 above independently flags any non-Running,
+# non-Completed phase.
 notready=$(kubectl get pods -A --no-headers 2>/dev/null \
-  | awk '{split($3,a,"/"); if (a[1]!=a[2]) print $1"/"$2"("$3")"}' | tr '\n' ' ')
+  | awk '$4!="Completed" && $4!="Succeeded" {split($3,a,"/"); if (a[1]!=a[2]) print $1"/"$2"("$3")"}' | tr '\n' ' ')
 if [[ -z "$notready" ]]; then
   record "Containers ready" PASS "every container ready"
 else
