@@ -16,7 +16,7 @@ services:
   # ---------------------------------------------------------------------------
 
   homeassistant:
-    image: ghcr.io/home-assistant/home-assistant:2026.8.3
+    image: ghcr.io/home-assistant/home-assistant:2026.8.3@sha256:14931c6b13756317849f46da1d01b45937a1150db66c081cfe529d48215943fe
     container_name: homeassistant
     network_mode: host
     # privileged: true  # disabled 2026-07-11 (security audit): full privileged not needed; BT uses cap_add below
@@ -31,7 +31,7 @@ services:
       - /run/dbus:/run/dbus:ro
 
   piper:
-    image: rhasspy/wyoming-piper:2.4.2
+    image: rhasspy/wyoming-piper:2.4.2@sha256:72ee1b06b062cb14f4a70de002eb420a068efd5a7a8cb7620be6bf600307f867
     container_name: piper
     restart: unless-stopped
     ports:
@@ -39,7 +39,7 @@ services:
     command: --voice en_US-hfc_female-medium
 
   whisper:
-    image: rhasspy/wyoming-whisper:3.6.0
+    image: rhasspy/wyoming-whisper:3.6.0@sha256:b7da5869ac9caba5f8db1c0dec373fb46a58d31f4aee1855faa7b49b7c0d4b49
     container_name: whisper
     restart: unless-stopped
     ports:
@@ -57,7 +57,7 @@ services:
   # the old native package's data dir. NEVER `apt purge plexmediaserver` — its
   # postrm rm -rf's that path only on purge; non-purge removal kept the media.
   plex:
-    image: lscr.io/linuxserver/plex:1.43.2.10687-563d026ea-ls312
+    image: lscr.io/linuxserver/plex:1.43.2.10687-563d026ea-ls312@sha256:12008668bf8b79c6ffeb0c0a7878a0354aaaa032368da71a0ea5e84717453b11
     container_name: plex
     network_mode: host
     restart: unless-stopped
