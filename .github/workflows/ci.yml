@@ -27,6 +27,21 @@ jobs:
           pipx install yamllint
           yamllint -d relaxed docker-compose.yml monitoring/ .github/
 
+      - name: Assert every image is pinned by digest
+        # A tag records what the publisher most recently CALLED an image; a
+        # digest records what it IS. Only the second is immutable. Two of the
+        # four images here live on Docker Hub accounts outside our control, and
+        # the weekly cron deploy.sh does `docker compose pull` as a user in the
+        # docker group -- root-equivalent. A re-pushed tag would run here with
+        # no commit and no signal.
+        #
+        # Renovate's pinDigests (configured in the sibling k8s repo, which
+        # governs this one too) makes new images arrive pinned. This is the
+        # half that keeps them that way.
+        run: |
+          pipx install --quiet pyyaml 2>/dev/null || pip install --quiet pyyaml
+          python3 .github/scripts/check-image-digests.py
+
       - name: Scan for committed secrets
         # Full-history scan via the gitleaks CLI. We don't use gitleaks-action's
         # push-range diffing because it derefs <base>^ and fails on a repo's root
