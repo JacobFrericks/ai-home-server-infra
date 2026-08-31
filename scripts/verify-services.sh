@@ -694,6 +694,77 @@ else
 fi
 
 # =========================================================================
+# Nightly vulnerability scan (trivy k8s against the live cluster)
+# =========================================================================
+# Same failure mode this repo has hit twice before: a check that only exists
+# on paper is indistinguishable from no check. Timer-enabled and metric-fresh
+# are checked separately, same as the offsite backup above -- a timer can be
+# enabled while every run has been failing silently for weeks.
+if systemctl is-enabled --quiet homeserver-vuln-scan.timer 2>/dev/null; then
+  record "Vuln scan timer" PASS "homeserver-vuln-scan.timer enabled"
+else
+  record "Vuln scan timer" FAIL "homeserver-vuln-scan.timer not enabled"
+fi
+
+VULN_METRIC=/var/lib/node_exporter/textfile_collector/homeserver_vuln.prom
+if [ -r "$VULN_METRIC" ]; then
+  vs_ts="$(awk '/^homeserver_vuln_scan_last_success_timestamp_seconds/{print $2}' "$VULN_METRIC")"
+  vs_age=$(( ($(date +%s) - ${vs_ts:-0}) / 3600 ))
+  if [ "${vs_ts:-0}" -gt 0 ] && [ "$vs_age" -lt 25 ]; then
+    record "Vuln scan freshness" PASS "last success ${vs_age}h ago"
+  else
+    record "Vuln scan freshness" FAIL "last success ${vs_age}h ago (>25h -- expected nightly)"
+  fi
+  vs_new="$(awk '/^homeserver_vuln_new_total/{print $2}' "$VULN_METRIC")"
+  if [ "${vs_new:-0}" -eq 0 ] 2>/dev/null; then
+    record "Vuln scan drift" PASS "no image CVEs outside the committed baseline"
+  else
+    record "Vuln scan drift" FAIL "${vs_new:-unknown} image CVE(s) not in security/baseline/images/*.json"
+  fi
+else
+  record "Vuln scan freshness" FAIL "no metric at $VULN_METRIC"
+  record "Vuln scan drift"     FAIL "no metric at $VULN_METRIC"
+fi
+
+# Baseline age: an accepted finding that is never revisited slowly becomes a
+# blanket exemption. 90 days matches vuln-baseline.py's STALE_DAYS in the
+# sibling k8s repo's PR-time gate -- same number, so the two cannot disagree.
+if [ -d "$STACK_DIR/security/baseline/images" ]; then
+  bl_stale=0
+  bl_total=0
+  now_epoch=$(date +%s)
+  for f in "$STACK_DIR"/security/baseline/images/*.json; do
+    [ -e "$f" ] || continue
+    bl_total=$((bl_total + 1))
+    accepted_dates="$(python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    for v in d.get("findings", {}).values():
+        print(v.get("accepted", ""))
+except Exception:
+    pass
+' "$f" 2>/dev/null)"
+    while IFS= read -r d; do
+      [ -n "$d" ] || continue
+      d_epoch="$(date -d "$d" +%s 2>/dev/null)"
+      [ -n "$d_epoch" ] || continue
+      age_days=$(( (now_epoch - d_epoch) / 86400 ))
+      [ "$age_days" -gt 90 ] && bl_stale=$((bl_stale + 1))
+    done <<< "$accepted_dates"
+  done
+  if [ "$bl_total" -eq 0 ]; then
+    record "Vuln baseline age" FAIL "no baseline files at $STACK_DIR/security/baseline/images"
+  elif [ "$bl_stale" -eq 0 ]; then
+    record "Vuln baseline age" PASS "$bl_total baseline file(s), nothing over 90 days"
+  else
+    record "Vuln baseline age" FAIL "$bl_stale accepted finding(s) over 90 days old -- worth a re-look"
+  fi
+else
+  record "Vuln baseline age" FAIL "no security/baseline/images directory"
+fi
+
+# =========================================================================
 # Host boot readiness
 # =========================================================================
 # A user-scoped NIC profile once left this box up-but-unreachable for 38 hours
