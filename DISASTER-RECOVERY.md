@@ -64,7 +64,13 @@ export AWS_ACCESS_KEY_ID=...        # from the password manager
 export AWS_SECRET_ACCESS_KEY=...
 export AWS_DEFAULT_REGION=us-west-2
 export RESTIC_PASSWORD=...          # from the password manager
-export RESTIC_REPOSITORY=s3:s3.us-west-2.amazonaws.com/homeserver-restic-offsite-p5ke0zp2me/restic
+# The repo URL (which contains the bucket name) is in the git-ignored .env, so
+# it is not printed in this public file. If you still have the box:
+#     grep RESTIC_OFFSITE_REPOSITORY ~/docker/ai-stack/.env
+# If you do NOT -- which is the case this page is written for -- it is in the
+# password manager next to RESTIC_PASSWORD, and it is also visible in the AWS
+# console as the only bucket on the account.
+export RESTIC_REPOSITORY=s3:s3.us-west-2.amazonaws.com/<bucket>/restic
 export RESTIC_CACHE_DIR=/var/cache/restic   # without this restic re-downloads
                                             # the index on every command, billed
                                             # as egress at $0.09/GB
