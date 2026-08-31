@@ -620,7 +620,6 @@ fi
 # BUCKET SETTINGS that keep it cheap and private. A misconfigured lifecycle rule
 # does not break anything visibly; it just quietly bills 5x.
 OFFSITE_METRIC=/var/lib/node_exporter/textfile_collector/homeserver_offsite.prom
-OFFSITE_BUCKET=homeserver-restic-offsite-p5ke0zp2me
 
 for t in critical bulk maintain; do
   if systemctl is-enabled --quiet "homeserver-offsite-$t.timer" 2>/dev/null; then
@@ -653,14 +652,27 @@ else
 fi
 
 # Bucket settings. Credentials are sourced into a subshell and never echoed.
+#
+# The bucket NAME is derived from RESTIC_OFFSITE_REPOSITORY in the git-ignored
+# .env, not written here. Same convention as the ntfy topic further down, and
+# for the same reason: this repository is public, so a value that identifies
+# infrastructure belongs in .env even when it is not itself a credential.
+#
+# 🔴 The derivation must FAIL LOUDLY when it comes back empty. `aws s3api
+# --bucket ""` errors, every query returns nothing, and each check below would
+# then compare an empty string and record a FAIL -- which is survivable. But an
+# empty bucket name silently reported as "cannot read .env" would hide a real
+# misconfiguration behind a plausible message, so it gets its own branch.
 if [ -r "$STACK_DIR/.env" ] && command -v aws >/dev/null 2>&1; then
   ob_state="$(
     set -a; . "$STACK_DIR/.env" >/dev/null 2>&1; set +a
-    ver="$(aws s3api get-bucket-versioning --bucket "$OFFSITE_BUCKET" --query Status --output text 2>/dev/null)"
-    pab="$(aws s3api get-public-access-block --bucket "$OFFSITE_BUCKET" \
+    bucket="${RESTIC_OFFSITE_REPOSITORY#*amazonaws.com/}"; bucket="${bucket%%/*}"
+    [ -n "$bucket" ] || { echo "NOBUCKET||"; exit 0; }
+    ver="$(aws s3api get-bucket-versioning --bucket "$bucket" --query Status --output text 2>/dev/null)"
+    pab="$(aws s3api get-public-access-block --bucket "$bucket" \
              --query "PublicAccessBlockConfiguration.[BlockPublicAcls,IgnorePublicAcls,BlockPublicPolicy,RestrictPublicBuckets]" \
              --output text 2>/dev/null | tr -d " \t")"
-    lc="$(aws s3api get-bucket-lifecycle-configuration --bucket "$OFFSITE_BUCKET" --output json 2>/dev/null | grep -c GLACIER_IR)"
+    lc="$(aws s3api get-bucket-lifecycle-configuration --bucket "$bucket" --output json 2>/dev/null | grep -c GLACIER_IR)"
     echo "$ver|$pab|$lc"
   )"
   IFS='|' read -r ob_ver ob_pab ob_lc <<< "$ob_state"
@@ -668,7 +680,10 @@ if [ -r "$STACK_DIR/.env" ] && command -v aws >/dev/null 2>&1; then
   [ "$ob_ver" = "Enabled" ]     || problems="$problems versioning=$ob_ver"
   [ "$ob_pab" = "TrueTrueTrueTrue" ] || problems="$problems public-access-block=$ob_pab"
   [ "${ob_lc:-0}" -ge 1 ]       || problems="$problems no-GLACIER_IR-lifecycle"
-  if [ -z "$problems" ]; then
+  if [ "$ob_ver" = "NOBUCKET" ]; then
+    record "Offsite bucket config" FAIL \
+      "RESTIC_OFFSITE_REPOSITORY missing or unparseable in $STACK_DIR/.env"
+  elif [ -z "$problems" ]; then
     record "Offsite bucket config" PASS "versioned, private, GLACIER_IR lifecycle"
   else
     record "Offsite bucket config" FAIL "issues:$problems"

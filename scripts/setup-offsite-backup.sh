@@ -47,7 +47,6 @@ STACK_DIR=/home/jacob/docker/ai-stack
 ENV_FILE="$STACK_DIR/.env"
 STATE_DIR=/var/lib/backup-offsite
 TEXTFILE_DIR=/var/lib/node_exporter/textfile_collector
-BUCKET=homeserver-restic-offsite-p5ke0zp2me
 
 # Larger packs mean fewer, bigger S3 objects: fewer PUT requests to seed, and
 # nothing bumping into Glacier IR's 128KB minimum billable object size.
@@ -85,6 +84,22 @@ set -a; source "$ENV_FILE"; set +a
 
 SRC="$RESTIC_REPOSITORY"
 DST="$RESTIC_OFFSITE_REPOSITORY"
+
+# The bucket name is DERIVED from the repo URL above, not written in this file.
+# It lives in the git-ignored .env with the credentials, because this repository
+# is public and a value that names infrastructure belongs alongside them even
+# when it is not itself a credential. Same convention as the ntfy topic, which
+# verify-services.sh reads at runtime rather than hardcoding.
+#
+#   s3:s3.<region>.amazonaws.com/<bucket>/restic   ->   <bucket>
+#
+# 🔴 An empty BUCKET must stop the script, not continue. `aws s3api --bucket ""`
+# fails on every call, so preflight() would report a wall of unrelated failures
+# and send you looking at IAM. Fail here, once, with the actual reason.
+BUCKET="${DST#*amazonaws.com/}"; BUCKET="${BUCKET%%/*}"
+[[ -n "$BUCKET" && "$BUCKET" != "$DST" ]] || die \
+  "cannot derive a bucket from RESTIC_OFFSITE_REPOSITORY ('$DST') -- expected \
+s3:s3.<region>.amazonaws.com/<bucket>/restic"
 
 # --- source-repo password ----------------------------------------------------
 # `restic copy` needs a password for the SOURCE repo, and there is no

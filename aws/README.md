@@ -4,14 +4,32 @@ The offsite half of the backup story. The local half is a RAID 1 mirror at
 `/srv/backup` (see `scripts/setup-raid.sh`), which survives a dead disk but not
 a fire, a theft, or a delete.
 
-- **Bucket:** `homeserver-restic-offsite-p5ke0zp2me`
+- **Bucket:** see `.env` — not named here, see below
 - **Region:** `us-west-2` (Oregon)
-- **Repo:** `s3:s3.us-west-2.amazonaws.com/homeserver-restic-offsite-p5ke0zp2me/restic`
-- **IAM user:** `homeserver-restic` (no console access, scoped to this one bucket)
+- **Repo:** `s3:s3.us-west-2.amazonaws.com/<bucket>/restic`
+- **IAM user:** no console access, scoped to this one bucket
 
 Credentials live in the git-ignored `.env` as `AWS_ACCESS_KEY_ID` /
 `AWS_SECRET_ACCESS_KEY` / `AWS_DEFAULT_REGION` / `RESTIC_OFFSITE_REPOSITORY`.
 They are never committed.
+
+## What is deliberately not in this repository
+
+**This repository is public.** A few values are kept in the git-ignored `.env`
+even though none of them is a credential, because each one *names* a piece of
+infrastructure and there is no reason for a stranger to have it:
+
+| Value | Where it lives | How code gets it |
+|---|---|---|
+| The S3 bucket name | `.env`, inside `RESTIC_OFFSITE_REPOSITORY` | derived: `${VAR#*amazonaws.com/}` then `%%/*` |
+| The ntfy topic | the Grafana contact point | `verify-services.sh` reads it at runtime |
+| The IAM user name | AWS console | not needed by any script |
+
+> **The convention, for whoever adds the next script:** if a value identifies
+> this specific deployment rather than describing how it works, read it at
+> runtime. Do not paste it into a tracked file. Everything else — the design,
+> the reasoning, the commands — belongs here in the open, which is the point of
+> the repository being public in the first place.
 
 ## Why Glacier Instant Retrieval, not Deep Archive
 
