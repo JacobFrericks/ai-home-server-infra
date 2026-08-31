@@ -186,6 +186,7 @@ stage_sqlite() {
 # about them is gone.
 stage_postgres() {
   local ns dep
+  # shellcheck disable=SC2043  # one entry today; loop shape stays for the next database
   for spec in "immich-private:immich-postgres"; do
     ns="${spec%%:*}"; dep="${spec##*:}"
     kubectl -n "$ns" get deploy "$dep" >/dev/null 2>&1 || continue
