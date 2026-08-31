@@ -27,6 +27,14 @@ jobs:
           pipx install yamllint
           yamllint -d relaxed docker-compose.yml monitoring/ .github/
 
+      - name: ShellCheck all scripts
+        # Every script here runs as root on the home server (deploy.sh, the
+        # setup-*.sh installers, the verify-*.sh checks). Hard gate: this repo
+        # owns every line of them, unlike the third-party image findings below.
+        # -S warning: keep style-only "info" notes (SC2015/SC2016 etc.) as
+        # local nitpicks, not a red build.
+        run: shellcheck -S warning deploy.sh scripts/*.sh
+
       - name: Assert every image is pinned by digest
         # A tag records what the publisher most recently CALLED an image; a
         # digest records what it IS. Only the second is immutable. Two of the

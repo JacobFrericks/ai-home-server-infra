@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154  # src_path/dest/file_count/total_bytes/manifest_lines come from the `source <(grep ...)` below
 # verify-pristine-copy.sh — re-check the pristine photo copy against its
 # manifest. Exits non-zero on ANY difference. Safe to run any time; read-only.
 #

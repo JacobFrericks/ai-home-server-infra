@@ -71,9 +71,11 @@ die() { printf '[offsite] ERROR: %s\n' "$*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die "must run as root (reads /srv/backup, writes systemd units and the textfile collector)"
 
 # --- config, from the git-ignored .env --------------------------------------
-# shellcheck disable=SC1090
 [[ -f "$ENV_FILE" ]] || die "$ENV_FILE not found"
-set -a; source "$ENV_FILE"; set +a
+set -a
+# shellcheck disable=SC1090
+source "$ENV_FILE"
+set +a
 
 : "${RESTIC_REPOSITORY:?RESTIC_REPOSITORY (the LOCAL repo) not set in $ENV_FILE}"
 : "${RESTIC_PASSWORD:?RESTIC_PASSWORD not set in $ENV_FILE}"

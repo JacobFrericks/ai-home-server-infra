@@ -21,10 +21,11 @@ STACK_DIR="/home/jacob/docker/ai-stack"
 # a Service were ever recreated. The host reaches ClusterIPs via Cilium.
 clusterip() { kubectl -n ai-stack get svc "$1" -o jsonpath='{.spec.clusterIP}' 2>/dev/null; }
 clusterip_ns() { kubectl -n "$1" get svc "$2" -o jsonpath='{.spec.clusterIP}' 2>/dev/null; }
-export GRAFANA_EP="$(clusterip_ns monitoring kube-prometheus-stack-grafana):3000"
-export OLLAMA_EP="http://$(clusterip ollama):11434"
-export COMFY_EP="http://$(clusterip comfyui):8188"
-export COMFYMCP_EP="http://$(clusterip comfyui-mcp):9300/mcp"
+GRAFANA_EP="$(clusterip_ns monitoring kube-prometheus-stack-grafana):3000"
+OLLAMA_EP="http://$(clusterip ollama):11434"
+COMFY_EP="http://$(clusterip comfyui):8188"
+COMFYMCP_EP="http://$(clusterip comfyui-mcp):9300/mcp"
+export GRAFANA_EP OLLAMA_EP COMFY_EP COMFYMCP_EP
 
 cd "$STACK_DIR" 2>/dev/null || { echo "cannot cd $STACK_DIR"; exit 2; }
 
@@ -96,7 +97,7 @@ fi
 # 2. Ollama  (gemma4:26b ONLY)
 # =========================================================================
 t0=$(date +%s.%N)
-og=$(curl -s --max-time 240 ${OLLAMA_EP}/api/generate \
+og=$(curl -s --max-time 240 "${OLLAMA_EP}"/api/generate \
    -d '{"model":"gemma4:26b","prompt":"Reply with the single word: ok","stream":false,"think":false,"options":{"num_predict":16}}')
 t1=$(date +%s.%N)
 # Success = the model actually generated tokens (done + eval_count>0, no error),
@@ -199,8 +200,8 @@ record "SearXNG-MCP" "${mcp%%|*}" "${mcp#*|}"
 #     that the SDXL checkpoint is present, that the MCP tool is exposed, and
 #     that the 12b orchestrator model exists (listed, never loaded).
 # =========================================================================
-cu_h=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 ${COMFY_EP}/system_stats)
-cu_ckpt=$(curl -s --max-time 15 ${COMFY_EP}/object_info/CheckpointLoaderSimple | python3 -c '
+cu_h=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${COMFY_EP}"/system_stats)
+cu_ckpt=$(curl -s --max-time 15 "${COMFY_EP}"/object_info/CheckpointLoaderSimple | python3 -c '
 import sys,json
 try:
     d=json.load(sys.stdin)
@@ -312,7 +313,7 @@ else
   record "Memory wiring" FAIL "${memwire#*|}"
 fi
 
-g12=$(curl -s --max-time 10 ${OLLAMA_EP}/api/tags | python3 -c 'import sys,json
+g12=$(curl -s --max-time 10 "${OLLAMA_EP}"/api/tags | python3 -c 'import sys,json
 try: print(sum(1 for m in json.load(sys.stdin).get("models",[]) if m.get("name","").startswith("gemma4:12b")))
 except: print(0)')
 if [ "${g12:-0}" -ge 1 ]; then
@@ -531,11 +532,11 @@ else
   record "Prometheus" FAIL "could not resolve container IP"
 fi
 
-gh=$(curl -s --max-time 10 http://${GRAFANA_EP}/api/health | python3 -c 'import sys,json
+gh=$(curl -s --max-time 10 http://"${GRAFANA_EP}"/api/health | python3 -c 'import sys,json
 try: print(json.load(sys.stdin).get("database",""))
 except: print("ERR")')
 if [ -n "$GRAFANA_PW" ]; then
-  dsres=$(curl -s --max-time 20 -u "admin:$GRAFANA_PW" http://${GRAFANA_EP}/api/datasources | python3 -c 'import sys,json
+  dsres=$(curl -s --max-time 20 -u "admin:$GRAFANA_PW" http://"${GRAFANA_EP}"/api/datasources | python3 -c 'import sys,json
 try:
     for d in json.load(sys.stdin): print(d["uid"],d["name"])
 except: pass')
@@ -718,13 +719,13 @@ fi
 if [ -n "$GRAFANA_PW" ]; then
   gapi() { curl -s --max-time 15 -u "admin:$GRAFANA_PW" "http://${GRAFANA_EP}$1"; }
 
-  # -- 1. both ntfy contact points provisioned, and the severity route present
-  read -r cp_n route_ok < <(gapi /api/v1/provisioning/contact-points | python3 -c '
+  # -- 1. both ntfy contact points provisioned (severity routing is checked below)
+  cp_n="$(gapi /api/v1/provisioning/contact-points | python3 -c '
 import sys,json
 try: cps=json.load(sys.stdin)
-except Exception: print("0 no"); raise SystemExit
+except Exception: print(0); raise SystemExit
 names={c.get("name") for c in cps}
-print(len(names & {"ntfy-critical","ntfy-warning"}), "yes" if {"ntfy-critical","ntfy-warning"} <= names else "no")')
+print(len(names & {"ntfy-critical","ntfy-warning"}))')"
   if [ "${cp_n:-0}" = 2 ]; then
     record "Alert contact points" PASS "ntfy-critical + ntfy-warning provisioned"
   else
