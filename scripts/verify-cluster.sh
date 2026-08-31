@@ -276,6 +276,116 @@ else
   fi
 fi
 
+
+# --- 16. the Argo project fence ----------------------------------------------
+# Until 2026-08-31 there was one project, `default`, allowing '*' resources in
+# '*' namespaces from '*' repos, with all 15 apps in it. One merged manifest
+# was one ClusterRoleBinding away from root on this box. The fix is five scoped
+# projects -- and a fence is only a fence while nobody has quietly widened it.
+#
+# Checked here rather than only in CI because CI reads git and this reads the
+# CLUSTER. Those disagree exactly when it matters: somebody ran kubectl.
+wild=$(kubectl get appproject -n argocd -o json 2>/dev/null \
+  | python3 -c '
+import json,sys
+try: data=json.load(sys.stdin)
+except Exception: sys.exit(0)
+bad=[]
+for p in data.get("items", []):
+    s=p.get("spec") or {}
+    name=p["metadata"]["name"]
+    def w(node):
+        if isinstance(node,str): return node=="*"
+        if isinstance(node,list): return any(w(v) for v in node)
+        if isinstance(node,dict): return any(w(v) for v in node.values())
+        return False
+    for f in ("sourceRepos","destinations","clusterResourceWhitelist"):
+        if f in s and w(s[f]): bad.append(f"{name}.{f}")
+print(",".join(bad))
+' 2>/dev/null)
+nproj=$(kubectl get appproject -n argocd --no-headers 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$nproj" -lt 5 ]]; then
+  record "Argo project fence" FAIL "only $nproj project(s); expected 5"
+elif [[ -n "$wild" ]]; then
+  record "Argo project fence" FAIL "wildcard restored in: $wild"
+else
+  record "Argo project fence" PASS "$nproj scoped projects, no wildcards"
+fi
+
+# Every app out of `default` except the app-of-apps root. An Application with
+# no `project:` field is silently assigned to `default` by Argo -- no error, no
+# log line, nothing red. This is what notices.
+stray=$(kubectl get applications -n argocd \
+  -o jsonpath='{range .items[?(@.spec.project=="default")]}{.metadata.name}{" "}{end}' \
+  2>/dev/null | tr ' ' '\n' | grep -v '^root$' | grep -v '^$' | tr '\n' ' ')
+if [[ -z "$stray" ]]; then
+  record "Argo apps scoped" PASS "only root in the default project"
+else
+  record "Argo apps scoped" FAIL "in default: $stray"
+fi
+
+# --- 17. admission policies present AND enforcing ----------------------------
+# Two questions, not one. A ValidatingAdmissionPolicyBinding left in
+# [Audit, Warn] records violations and permits them -- it looks identical to an
+# enforcing one in `kubectl get`, and it stops nothing. Audit mode is the
+# correct FIRST step of a rollout and the wrong permanent state, so a binding
+# still in audit reports PEND rather than PASS.
+vapb=$(kubectl get validatingadmissionpolicybinding -o json 2>/dev/null \
+  | python3 -c '
+import json,sys
+try: data=json.load(sys.stdin)
+except Exception: sys.exit(0)
+want={"deny-host-access","deny-cluster-admin-binding",
+      "deny-wildcard-clusterrole","restrict-pv-host-paths",
+      "pin-application-projects"}
+have={}
+for b in data.get("items", []):
+    have[b["metadata"]["name"]]=b.get("spec",{}).get("validationActions") or []
+missing=sorted(want-set(have))
+audit=sorted(n for n in want&set(have) if "Deny" not in have[n])
+print("|".join([",".join(missing), ",".join(audit), str(len(want&set(have)))]))
+' 2>/dev/null)
+vmissing=$(echo "$vapb" | cut -d'|' -f1)
+vaudit=$(echo "$vapb" | cut -d'|' -f2)
+vcount=$(echo "$vapb" | cut -d'|' -f3)
+if [[ -n "$vmissing" ]]; then
+  record "Admission policies" FAIL "missing: $vmissing"
+elif [[ -n "$vaudit" ]]; then
+  record "Admission policies" PEND "audit-only, not enforcing: $vaudit"
+else
+  record "Admission policies" PASS "$vcount bindings, all enforcing Deny"
+fi
+
+# --- 18. every namespace declares a Pod Security level -----------------------
+# An absent enforce label is not "no opinion" -- it is no enforcement, which is
+# the same latitude as `privileged`. Seven of sixteen namespaces were in that
+# state on 2026-08-30, and absence reads as an oversight, which is precisely
+# how one survives review. kube-* and default are k3s's, not ours.
+#
+# cilium-secrets is skipped for a specific, checked reason rather than for
+# convenience: the cilium chart creates it to hold Hubble TLS certificates, it
+# is EMPTY today, and the chart exposes no way to set labels on it. A Pod
+# Security level is a statement about pods, and no pod has ever been scheduled
+# there. If that changes, this line is the thing to revisit.
+unlabelled=$(kubectl get ns -o json 2>/dev/null | python3 -c '
+import json,sys
+try: data=json.load(sys.stdin)
+except Exception: sys.exit(0)
+skip=("kube-system","kube-public","kube-node-lease","default",
+      "cilium-secrets")
+out=[n["metadata"]["name"] for n in data.get("items", [])
+     if n["metadata"]["name"] not in skip
+     and not (n["metadata"].get("labels") or {}).get(
+         "pod-security.kubernetes.io/enforce")]
+print(" ".join(sorted(out)))
+' 2>/dev/null)
+nns=$(kubectl get ns --no-headers 2>/dev/null | wc -l | tr -d ' ')
+if [[ -z "$unlabelled" ]]; then
+  record "Pod Security labels" PASS "$nns namespaces, all levels declared"
+else
+  record "Pod Security labels" FAIL "no enforce label: $unlabelled"
+fi
+
 echo "------------------------------------------------------------------------"
 echo "TOTAL: $PASS passed, $PEND pending, $FAIL failed   ($(date '+%Y-%m-%d %H:%M:%S %Z'))"
 [[ "$FAIL" -eq 0 ]]
