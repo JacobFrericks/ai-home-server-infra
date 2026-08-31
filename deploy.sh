@@ -95,14 +95,53 @@ docker compose up -d --build
 #    are not on those host ports, so those checks failed unconditionally --
 #    two of them setting ok=0, which made a successful deploy report
 #    HEALTH CHECK FAILED. The cluster is covered by scripts/verify-services.sh.
-log "health check"
+#
+#    WHY THIS WAITS. The check used to run the instant `up -d` returned. But
+#    `up -d` returns when the container has STARTED, not when the application
+#    inside it is listening -- Home Assistant and Plex both take tens of
+#    seconds to bind their port. So a perfectly good deploy reported
+#    HEALTH CHECK FAILED and, since the ERR/notify path was added, pushed a
+#    false alarm to the phone. Observed on the 2026-08-31 digest-pinning
+#    deploy: both services failed at t=0s and answered 200 ten seconds later.
+#
+#    A false alarm every Sunday is worse than no alarm, because it trains the
+#    one person who reads it to ignore the channel. So each check now RETRIES
+#    up to HEALTH_TIMEOUT, and only a service that never comes up is a failure.
+#    A genuine outage still fails -- it just takes HEALTH_TIMEOUT to say so.
+HEALTH_TIMEOUT=${HEALTH_TIMEOUT:-180}   # seconds, per check
+HEALTH_INTERVAL=5
+
+# Retry a command until it succeeds or the budget runs out.
+# Returns 0 on success, 1 on timeout. Never trips the ERR trap: the caller
+# decides what a failure means.
+wait_for() { # $1 = human label, rest = command to retry
+  local label="$1"; shift
+  local deadline=$(( SECONDS + HEALTH_TIMEOUT ))
+  local first=1
+  until "$@" >/dev/null 2>&1; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      log "FAIL: $label did not come up within ${HEALTH_TIMEOUT}s"
+      return 1
+    fi
+    [ "$first" -eq 1 ] && { log "waiting for $label (up to ${HEALTH_TIMEOUT}s)"; first=0; }
+    sleep "$HEALTH_INTERVAL"
+  done
+  return 0
+}
+
+svc_running() { # $1 = compose service name
+  local id
+  id=$(docker compose ps -q "$1" 2>/dev/null) || return 1
+  [ -n "$id" ] || return 1
+  [ "$(docker inspect -f '{{.State.Running}}' "$id" 2>/dev/null)" = "true" ]
+}
+
+log "health check (each service gets up to ${HEALTH_TIMEOUT}s to start listening)"
 ok=1
-curl -fsS -o /dev/null "http://127.0.0.1:8123/" || { log "FAIL: Home Assistant :8123"; ok=0; }
-curl -fsS -o /dev/null "http://127.0.0.1:32400/identity" || { log "FAIL: Plex :32400"; ok=0; }
+wait_for "Home Assistant :8123" curl -fsS -o /dev/null "http://127.0.0.1:8123/" || ok=0
+wait_for "Plex :32400" curl -fsS -o /dev/null "http://127.0.0.1:32400/identity" || ok=0
 for svc in piper whisper; do
-  [ "$(docker compose ps -q "$svc" | wc -l)" -eq 1 ] \
-    && [ "$(docker inspect -f '{{.State.Running}}' "$(docker compose ps -q "$svc")")" = "true" ] \
-    || { log "FAIL: compose service $svc is not running"; ok=0; }
+  wait_for "compose service $svc" svc_running "$svc" || ok=0
 done
 
 if [ "$ok" -ne 1 ]; then
