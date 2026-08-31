@@ -15,6 +15,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          # zizmor (added below): a floating tag is one compromised upstream
+          # release away from arbitrary code running with this repo's push
+          # access -- same reasoning check-image-digests.py already applies
+          # to image tags. A SHA records what an action IS, not what it was
+          # most recently CALLED.
+          persist-credentials: false
 
       - name: Validate compose file
         env:
@@ -34,6 +40,69 @@ jobs:
         # -S warning: keep style-only "info" notes (SC2015/SC2016 etc.) as
         # local nitpicks, not a red build.
         run: shellcheck -S warning deploy.sh scripts/*.sh
+
+      - name: trivy image — delta gate on the 2 self-built images
+        # memory-mcp and comfyui-mcp are pushed ONLY to a loopback-only
+        # in-cluster registry (localhost:5000 on the k3s node) -- a
+        # GitHub-hosted runner cannot reach it, by design (see
+        # ai-home-server-k8s/infra/registry/registry.yaml). So this builds
+        # each Dockerfile fresh, scans the LOCAL build with the docker-daemon
+        # scanner, and never pushes anywhere.
+        #
+        # This repo is PUBLIC. security/baseline/images/*.json commits only a
+        # COUNT of accepted findings per severity, never a specific CVE ID --
+        # a named, dated "here is our unpatched hole" list has no business in
+        # a public repo. A PR fails only if a severity's count goes UP. Real
+        # counts, 2026-09-01: 3 CRITICAL + 18 HIGH in EACH image (same
+        # python:3.14-slim + Debian 13 base). See vuln-baseline.py's module
+        # docstring for the precision this trades away on purpose.
+        run: |
+          set -euo pipefail
+          TRIVY_VERSION=0.74.0
+          BASE=https://github.com/aquasecurity/trivy/releases/download
+          TGZ="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sSL "$BASE/v${TRIVY_VERSION}/$TGZ" | tar -xz -C /tmp trivy
+          fail=0
+          for img in memory-mcp comfyui-mcp; do
+            docker build -t "${img}:ci-scan" "${img}/"
+            /tmp/trivy image --severity HIGH,CRITICAL --exit-code 0 -f json \
+              -o "/tmp/${img}-scan.json" "${img}:ci-scan"
+            python3 .github/scripts/vuln-baseline.py check \
+              --scan "/tmp/${img}-scan.json" \
+              --baseline "security/baseline/images/${img}.json" \
+              --target "image:${img}" || fail=1
+          done
+          exit $fail
+
+      - name: Bandit — warn-only
+        # ~8k LOC of glue and MCP servers taking LLM-supplied input (memory-mcp,
+        # comfyui-mcp, scripts/, the HA custom_components except the vendored
+        # wyzeapi integration -- not this repo's code, excluded). Warn-only for
+        # the first month per the security-scanning-ci plan, so the real noise
+        # level is known before this becomes a hard gate.
+        run: |
+          pipx install --quiet bandit 2>/dev/null || pip install --quiet bandit
+          bandit -r . -ll \
+            --exclude ./homeassistant/custom_components/wyzeapi \
+            --exit-zero
+
+      - name: zizmor — GitHub Actions supply-chain lint
+        # zizmor catches the class of bug gitleaks and yamllint both miss: an
+        # action pinned by a mutable tag instead of a SHA, a workflow that
+        # hands a fork PR's untrusted input straight to `run:`, secrets
+        # leaking into a log via debug output, and similar. Hard fail --
+        # this repo's own workflows are exactly what an attacker would target
+        # to get at the build-bot GitHub App's push access. Matches the
+        # sibling k8s repo's invocation.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION=1.30.0
+          BASE=https://github.com/woodruffw/zizmor/releases/download
+          curl -sSL "$BASE/v${VERSION}/zizmor-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C /tmp zizmor
+          /tmp/zizmor --min-severity medium .
 
       - name: Assert every image is pinned by digest
         # A tag records what the publisher most recently CALLED an image; a
