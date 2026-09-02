@@ -46,13 +46,38 @@ def walk_findings(node):
             yield from walk_findings(item)
 
 
-def load_baseline_ids(baseline_glob):
-    ids = set()
-    for path in glob.glob(baseline_glob):
-        with open(path) as f:
-            data = json.load(f)
-        ids |= set(data.get("findings", {}).keys())
-    return ids
+def load_accepted_counts(baseline_path):
+    """Accepted fixable-CVE counts for the WHOLE live cluster, by severity.
+
+    Two things forced this shape, both found by the first real run
+    (2026-09-02), which reported 913 "new" CVEs and would have paged the
+    phone on night one:
+
+    1. FORMAT. This originally read a per-CVE-ID list. That list no longer
+       exists: ai-home-server-infra is PUBLIC, so the image baselines were
+       rewritten to store only counts per severity -- a dated, named list of
+       every unpatched hole on this server has no business in a public repo.
+       Reading `findings` out of a count-only file silently loaded 0 IDs, so
+       every CVE in the cluster looked new.
+
+    2. SCOPE. The per-image baselines cover the 2 SELF-BUILT images
+       (memory-mcp, comfyui-mcp) that CI builds and gates. This scan covers
+       every image actually RUNNING -- ~30 of them, including open-webui,
+       immich, argocd, ollama. Diffing the second against the first is a
+       category error even with matching formats.
+
+    So the live cluster gets its own count baseline, and "new" means the
+    fixable count went UP against it. Same deliberate precision tradeoff as
+    the CI gate: one CVE fixed and another appearing on the same night keeps
+    the count flat and passes unnoticed. That is the price of not naming
+    findings in a public repo, and the nightly unit log still prints the
+    full detail for whoever is actually looking.
+    """
+    try:
+        with open(baseline_path) as f:
+            return json.load(f).get("accepted_counts", {})
+    except FileNotFoundError:
+        return {}
 
 
 def main():
@@ -61,16 +86,19 @@ def main():
                     help="trivy k8s --scanners vuln -f json output")
     p.add_argument("--posture-scan", required=True,
                     help="trivy k8s --scanners misconfig,rbac -f json output")
-    p.add_argument("--baseline-glob", required=True,
-                    help="e.g. /path/to/repo/security/baseline/images/*.json")
+    p.add_argument("--baseline", required=True,
+                    help="e.g. /path/to/repo/security/baseline/live-cluster.json")
     p.add_argument("--out", required=True, help=".prom file to write")
+    p.add_argument("--update-baseline", action="store_true",
+                    help="write this run's counts back as the accepted baseline "
+                         "(use once to seed it, or after deliberately accepting a rise)")
     args = p.parse_args()
 
-    baseline_ids = load_baseline_ids(args.baseline_glob)
-    print(f"loaded {len(baseline_ids)} accepted image-CVE IDs from {args.baseline_glob}")
+    accepted = load_accepted_counts(args.baseline)
+    print(f"accepted baseline counts from {args.baseline}: {accepted or '(none yet)'}")
 
     fixable = {"CRITICAL": 0, "HIGH": 0}
-    new_findings = []
+    all_findings = []
     seen = set()
 
     with open(args.vuln_scan) as f:
@@ -84,8 +112,25 @@ def main():
         seen.add(key)
         if severity in fixable and fixed:
             fixable[severity] += 1
-        if finding_id not in baseline_ids:
-            new_findings.append((finding_id, severity))
+        all_findings.append((finding_id, severity))
+
+    # "New" = how many MORE fixable CVEs than the accepted baseline, summed
+    # across severities. Never negative: fixing things must not read as a
+    # deficit, and this metric drives an alert that fires on > 0.
+    new_count = sum(
+        max(0, fixable[sev] - int(accepted.get(sev, 0)))
+        for sev in ("CRITICAL", "HIGH")
+    )
+
+    if args.update_baseline:
+        with open(args.baseline, "w") as f:
+            json.dump({
+                "target": "live-cluster",
+                "generated": datetime.date.today().isoformat(),
+                "accepted_counts": {k: fixable[k] for k in ("CRITICAL", "HIGH")},
+            }, f, indent=2)
+            f.write("\n")
+        print(f"baseline updated: {fixable}")
 
     # Posture is reported, not baselined -- see module docstring.
     with open(args.posture_scan) as f:
@@ -104,9 +149,9 @@ def main():
         "# TYPE homeserver_vuln_fixable_total gauge",
         f'homeserver_vuln_fixable_total{{severity="critical"}} {fixable["CRITICAL"]}',
         f'homeserver_vuln_fixable_total{{severity="high"}} {fixable["HIGH"]}',
-        "# HELP homeserver_vuln_new_total Live-cluster image CVEs not in security/baseline/images/*.json -- the alertable one.",
+        "# HELP homeserver_vuln_new_total Fixable live-cluster image CVEs ABOVE the accepted baseline count -- the alertable one.",
         "# TYPE homeserver_vuln_new_total gauge",
-        f"homeserver_vuln_new_total {len(new_findings)}",
+        f"homeserver_vuln_new_total {new_count}",
         "# HELP homeserver_vuln_scan_last_success_timestamp_seconds Unix time of the last successful nightly vuln scan.",
         "# TYPE homeserver_vuln_scan_last_success_timestamp_seconds gauge",
         f"homeserver_vuln_scan_last_success_timestamp_seconds {now}",
@@ -117,11 +162,9 @@ def main():
     os.rename(tmp, args.out)  # write-then-rename: the collector must never read a half-written file
 
     print(f"fixable image CVEs: CRITICAL={fixable['CRITICAL']} HIGH={fixable['HIGH']}")
-    print(f"new image CVEs (not in baseline): {len(new_findings)}")
-    for finding_id, severity in sorted(new_findings)[:20]:
-        print(f"  NEW [{severity}] {finding_id}")
-    if len(new_findings) > 20:
-        print(f"  ... and {len(new_findings) - 20} more")
+    print(f"accepted:           CRITICAL={accepted.get('CRITICAL', 0)} HIGH={accepted.get('HIGH', 0)}")
+    print(f"above baseline (alertable): {new_count}")
+    print(f"total distinct CVE IDs seen in the live cluster: {len(all_findings)}")
     print(f"live posture findings (misconfig/rbac, reported not baselined): {len(posture_findings)}")
     for finding_id, severity in sorted(posture_findings)[:20]:
         print(f"  POSTURE [{severity}] {finding_id}")

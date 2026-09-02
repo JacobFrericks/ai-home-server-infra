@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # setup-vuln-scan.sh — nightly trivy scan of the LIVE k3s cluster. Idempotent.
 #
-#   sudo ./scripts/setup-vuln-scan.sh --check    # read-only: trivy, kubeconfig, baseline
-#   sudo ./scripts/setup-vuln-scan.sh --run      # one scan now
-#   sudo ./scripts/setup-vuln-scan.sh --install  # systemd unit + timer
+#   sudo ./scripts/setup-vuln-scan.sh --check          # read-only: trivy, kubeconfig, baseline
+#   sudo ./scripts/setup-vuln-scan.sh --run            # one scan now
+#   sudo ./scripts/setup-vuln-scan.sh --install        # systemd unit + timer
+#   sudo ./scripts/setup-vuln-scan.sh --seed-baseline  # scan, and accept today's counts
 #
 # ---------------------------------------------------------------------------
 # WHY THIS RUNS HERE AND NOT IN GITHUB ACTIONS
@@ -28,7 +29,7 @@
 # keeps this script self-contained: ai-home-server-k8s is a PRIVATE repo
 # (confirmed via `gh api ... -q .private` 2026-08-31); the GitHub App keys
 # that read it live only on the operator's laptop, not this server. Reading
-# THIS repo's own local checkout (security/baseline/images/*.json) needs no
+# THIS repo's own local checkout (security/baseline/live-cluster.json) needs no
 # network call and no second credential shipped to a second machine -- that
 # would be a real decision, not something to make inside a cron script.
 # Misconfig/RBAC findings are still scanned and printed to the unit log
@@ -75,13 +76,16 @@ do_check() {
       log "FAIL: cluster API not reachable via $KUBECONFIG_PATH"; fail=1
     fi
   fi
-  local n
-  n="$(find "$STACK_DIR/security/baseline/images" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')"
-  if [[ "${n:-0}" -gt 0 ]]; then
-    log "OK:   $n image baseline file(s) at $STACK_DIR/security/baseline/images"
+  # The LIVE-CLUSTER baseline, not the per-image ones -- see do_run(). Its
+  # absence is a WARN, not a FAIL: the very first run legitimately has none,
+  # and --seed-baseline is how you create it. But say plainly what that costs,
+  # because an unseeded baseline reads every fixable CVE as alertable and
+  # pages the phone the first night (observed 2026-09-02: 913 of them).
+  if [[ -r "$STACK_DIR/security/baseline/live-cluster.json" ]]; then
+    log "OK:   live-cluster baseline present"
   else
-    log "FAIL: no baseline files at $STACK_DIR/security/baseline/images -- every CVE would report as new"
-    fail=1
+    log "WARN: no live-cluster baseline yet -- run --seed-baseline once, or the"
+    log "      first nightly run reports every fixable CVE as new and alerts."
   fi
   [[ -d "$TEXTFILE_DIR" ]] && log "OK:   textfile collector dir exists" \
     || log "WARN: $TEXTFILE_DIR missing -- will be created by --install"
@@ -90,24 +94,45 @@ do_check() {
 
 do_run() {
   command -v "$TRIVY_BIN" >/dev/null || die "trivy not installed -- run --install first"
-  [[ -d "$STACK_DIR/security/baseline/images" ]] || die "no baseline dir at $STACK_DIR/security/baseline/images"
+  mkdir -p "$STACK_DIR/security/baseline"
   mkdir -p "$SCAN_DIR"; chmod 700 "$SCAN_DIR"
 
   log "scanning live image CVEs (trivy k8s --scanners vuln)..."
+  # --disable-node-collector here too: see the posture scan below for why the
+  # collector Job cannot run on this cluster. This scan tolerated its failure
+  # (image CVEs come from containerd, not the collector) but still paid ~2min
+  # waiting on a Job that admission was always going to deny.
   "$TRIVY_BIN" k8s --scanners vuln --severity HIGH,CRITICAL --timeout 15m \
+    --disable-node-collector \
     -f json -o "$SCAN_DIR/vuln.json" \
     || { log "WARN: vuln scan failed -- metrics will NOT be updated this run"; return 1; }
 
+  # --disable-node-collector: trivy's default posture scan schedules an
+  # in-cluster node-collector Job that wants hostPID, and this cluster's
+  # `deny-host-access` ValidatingAdmissionPolicy refuses it -- correctly:
+  # hostPID exposes /proc/<pid>/environ for every host process, and this
+  # cluster passes secrets as container env vars. Verified by the first real
+  # run on 2026-09-02, which failed exactly there. Relaxing the policy to
+  # please a scanner would be backwards, so the scanner gives up the part it
+  # cannot have: node-level OS misconfig findings. Everything else in the
+  # posture scan (workload misconfig + RBAC) still runs, and the node's own
+  # OS packages are covered by unattended-upgrades plus the vuln scan above.
   log "scanning live cluster posture (trivy k8s --scanners misconfig,rbac)..."
   "$TRIVY_BIN" k8s --scanners misconfig,rbac --severity HIGH,CRITICAL --timeout 15m \
+    --disable-node-collector \
     -f json -o "$SCAN_DIR/posture.json" \
     || { log "WARN: posture scan failed -- metrics will NOT be updated this run"; return 1; }
 
   mkdir -p "$TEXTFILE_DIR"; chmod 755 "$TEXTFILE_DIR"
+  # --baseline is the LIVE-CLUSTER count baseline, not the per-image ones in
+  # security/baseline/images/ -- those cover only the 2 self-built images CI
+  # gates, while this scans every image actually running. See the docstring
+  # in vuln-nightly-scan.py. Seed it once with --seed-baseline.
   python3 "$STACK_DIR/scripts/vuln-nightly-scan.py" \
     --vuln-scan "$SCAN_DIR/vuln.json" \
     --posture-scan "$SCAN_DIR/posture.json" \
-    --baseline-glob "$STACK_DIR/security/baseline/images/*.json" \
+    --baseline "$STACK_DIR/security/baseline/live-cluster.json" \
+    ${SEED_BASELINE:+--update-baseline} \
     --out "$TEXTFILE_DIR/homeserver_vuln.prom"
   chmod 644 "$TEXTFILE_DIR/homeserver_vuln.prom"
   log "scan complete"
@@ -161,5 +186,10 @@ case "${1:---check}" in
   --check)   do_check ;;
   --run)     do_run ;;
   --install) do_install ;;
-  *) die "unknown mode '$1' (use --check, --run, --install)" ;;
+  # Seeds security/baseline/live-cluster.json from what is running RIGHT NOW,
+  # i.e. declares today's fixable-CVE count acceptable. Run once at setup, or
+  # deliberately after accepting a rise. NOT part of --run: a nightly job that
+  # re-baselines itself every night can never alert on anything.
+  --seed-baseline) SEED_BASELINE=1 do_run ;;
+  *) die "unknown mode '$1' (use --check, --run, --install, --seed-baseline)" ;;
 esac
