@@ -1,0 +1,8 @@
+{
+  "target": "live-cluster",
+  "generated": "2026-09-02",
+  "accepted_counts": {
+    "CRITICAL": 31,
+    "HIGH": 426
+  }
+}
