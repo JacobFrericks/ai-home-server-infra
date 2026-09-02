@@ -57,7 +57,7 @@ services:
   # the old native package's data dir. NEVER `apt purge plexmediaserver` — its
   # postrm rm -rf's that path only on purge; non-purge removal kept the media.
   plex:
-    image: lscr.io/linuxserver/plex:1.43.2.10687-563d026ea-ls312@sha256:12008668bf8b79c6ffeb0c0a7878a0354aaaa032368da71a0ea5e84717453b11
+    image: lscr.io/linuxserver/plex:1.43.3.10896-cb3ebc72d-ls322@sha256:7f9a1d574958fc2f177c14ca190d4b811a58c274477f5bae8fb44ee676fb96bf
     container_name: plex
     network_mode: host
     restart: unless-stopped
