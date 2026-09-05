@@ -6,7 +6,11 @@ FROM python:3.14-slim
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# pip is dropped after the install: nothing at runtime uses it, and trivy
+# reads pip/_vendor/vendor.txt, so the vendored msgpack + setuptools pins
+# show up as findings we cannot upgrade independently of pip itself.
+RUN pip install --no-cache-dir -r requirements.txt \
+ && pip uninstall -y pip
 
 COPY server.py .
 
