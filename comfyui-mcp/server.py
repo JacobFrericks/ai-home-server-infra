@@ -35,7 +35,7 @@ import random
 import urllib.parse
 
 import httpx
-from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.mcpserver import MCPServer, Image
 
 COMFYUI_URL = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188").rstrip("/")
 CHECKPOINT = os.environ.get("SDXL_CHECKPOINT", "sd_xl_base_1.0.safetensors")
@@ -51,7 +51,7 @@ OWUI_PUBLIC_URL = os.environ.get("OWUI_PUBLIC_URL", "").rstrip("/")   # e.g. htt
 OWUI_USER_ID = os.environ.get("OWUI_USER_ID", "")
 WEBUI_SECRET_KEY = os.environ.get("WEBUI_SECRET_KEY", "")
 
-mcp = FastMCP("comfyui", host=HOST, port=PORT)
+mcp = MCPServer("comfyui")
 
 
 def _clamp_dim(v: int) -> int:
@@ -228,4 +228,7 @@ def generate_image(prompt: str, negative_prompt: str = "",
 
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http")
+    # host/port are `run` kwargs in mcp 2.x, not constructor args. They must be
+    # passed: the default host is 127.0.0.1, which in a container means nothing
+    # outside the pod can reach it.
+    mcp.run(transport="streamable-http", host=HOST, port=PORT)
