@@ -53,6 +53,8 @@ scripts/
   setup-wyze.sh             # idempotent: install the vendored Wyze integration into HA
   ha-wyze-logging.py        # quiet the wyzeapi camera logger that leaks AWS creds (root)
   verify-services.sh        # functional PASS/FAIL check of the whole stack
+  build-mcp-images.sh       # rebuild+push comfyui-mcp/memory-mcp when their source
+                            #   moves on main; --install adds the 15-min systemd timer
 deploy.sh            # run on the server: git pull -> compose pull -> up -d -> health check
 .github/
   dependabot.yml               # opens PRs to bump the pinned image tags
