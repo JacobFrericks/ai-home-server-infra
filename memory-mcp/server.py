@@ -6,7 +6,7 @@ memory. It exposes save/update/delete/list tools that the Open WebUI chat model
 with YAML-ish frontmatter — the same shape as Claude Code's own memory dir, so
 the files can be opened, grepped, hand-edited, and backed up as plain text.
 
-Mirrors the searxng-mcp / comfyui-mcp pattern in this stack: FastMCP over
+Mirrors the searxng-mcp / comfyui-mcp pattern in this stack: MCPServer over
 streamable-HTTP, bound on LOOPBACK ONLY (127.0.0.1), host networking so the
 host-networked open-webui can reach it. It never touches Ollama or the LAN.
 
@@ -28,7 +28,7 @@ import re
 import time
 import tempfile
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 MEMORY_DIR = os.environ.get("MEMORY_DIR", "/data/memory")
 HOST = os.environ.get("MCP_HTTP_HOST", "127.0.0.1")
@@ -38,7 +38,7 @@ INDEX = "MEMORY.md"
 # Taxonomy tuned for a home assistant. Unknown types fold to "reference".
 TYPES = ("user", "household", "project", "reference")
 
-mcp = FastMCP("memory", host=HOST, port=PORT)
+mcp = MCPServer("memory")
 
 # A tool's description is prompt engineering: it is the text the model reads when
 # deciding whether and how to call the tool. This repo is public, so the tuned
@@ -232,4 +232,7 @@ def delete_memory(name: str) -> str:
 if __name__ == "__main__":
     os.makedirs(MEMORY_DIR, exist_ok=True)
     _rebuild_index()
-    mcp.run(transport="streamable-http")
+    # host/port are `run` kwargs in mcp 2.x, not constructor args. They must be
+    # passed: the default host is 127.0.0.1, which in a container means nothing
+    # outside the pod can reach it.
+    mcp.run(transport="streamable-http", host=HOST, port=PORT)
