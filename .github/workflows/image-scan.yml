@@ -1,0 +1,66 @@
+name: image-scan
+
+# Trivy delta gate on the two self-built images, split out of the CI workflow's
+# `validate` job so a scan failure is legible on its own rather than being one
+# step inside a nine-step job.
+#
+# ⚠️ WHY THE DATABASE IS PINNED, and it is the whole point of this file:
+#
+# A scan gate has TWO moving inputs -- the image and the CVE database -- and
+# only the image was ever pinned. Trivy's vulnerability DB is fetched fresh on
+# every run. On 2026-09-04 it picked up a batch of new Debian 13 advisories and
+# both images jumped HIGH 18 -> 53 with NOTHING changed in this repo. Proven at
+# the time by scanning the bare python:3.14-slim base with the same pinned trivy
+# 0.74.0: the base image digest had not moved, so every added finding came from
+# the database, not from us.
+#
+# The failure mode that makes this worth fixing is not the red build. It is that
+# PRs opened Sep 1-3 kept a GREEN check from before the database moved, and the
+# ruleset does not require branches to be up to date -- so three stale greens
+# merged and main went red immediately after. A gate that can change verdict
+# with no commit is a gate nobody can reason about.
+#
+# So: this gate pins the database and only turns red when THIS REPO changes.
+# Database movement arrives as a reviewed Renovate PR instead (custom manager in
+# the sibling k8s repo's workloads/renovate/renovate.json5, which governs this
+# repo too). Expect that PR to arrive red -- that is the signal working, not a
+# fault. Run the `generate` command its failure message prints, decide whether
+# the new findings matter, and commit the new baseline onto Renovate's branch.
+#
+# Pinning trades away freshness, so it is deliberately paired with
+# image-scan-nightly.yml, which runs the identical scan against the LATEST
+# database every night. Pinned gate for a stable verdict; nightly canary so a
+# database move is still known within a day.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image-scan:
+    runs-on: ubuntu-latest
+    env:
+      # Kept current by Renovate (datasource=docker). The tag@digest form is
+      # what Renovate updates and what every image in these repos already
+      # uses; trivy accepts it on --db-repository, verified against 0.74.0
+      # before adopting it.
+      #
+      # If you change this pin by hand, regenerate BOTH baselines against
+      # the new database in the same commit -- a pin and a baseline cut from
+      # different databases is how this goes quietly wrong.
+      TRIVY_DB_REF: ghcr.io/aquasecurity/trivy-db:2@sha256:27b85212b663ffd23b09e533fa8f73cf4dd8add3760e741c04ac61865bc02dfc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # zizmor: a floating tag is one compromised upstream release away
+          # from arbitrary code running with this repo's push access -- the
+          # same reasoning check-image-digests.py applies to image tags.
+          persist-credentials: false
+
+      - name: trivy image — delta gate on the 2 self-built images
+        run: .github/scripts/scan-images.sh

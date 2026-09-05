@@ -1,0 +1,50 @@
+name: image-scan-nightly
+
+# The canary for image-scan.yml.
+#
+# Identical scan, same script, one difference: TRIVY_DB_REF is NOT set, so trivy
+# resolves its default repositories and uses whatever vulnerability database is
+# current.
+#
+# ⚠️ WHAT A RED RUN HERE MEANS, and it is not the obvious thing:
+#
+# It does NOT mean the images got worse. Nothing about them changed overnight.
+# It means the DATABASE learned something new about packages that were already
+# there. That may be genuinely worth acting on, or it may be another batch of
+# Debian advisories with no fix available -- the point is that a human looks and
+# decides, on a nightly run nobody is waiting on, instead of finding out when an
+# unrelated PR turns red.
+#
+# Response to a red night: look at what moved, then either accept it (regenerate
+# both baselines and bump the pin in image-scan.yml in the same commit) or treat
+# it as a real finding. Renovate will also raise the database bump on its own;
+# this exists so the news arrives on the day it happens rather than on the bot's
+# schedule.
+#
+# NOTIFICATION: none is wired, deliberately. GitHub already emails the repo
+# owner when a scheduled workflow fails on the default branch. The ntfy
+# push is LAN-only on the Pi and GitHub's runners are on the public internet, so
+# they cannot reach it -- do not try to wire that path from here.
+
+on:
+  schedule:
+    # ~01:17 CDT. Off-hour minute because scheduled runs bunch up on the
+    # hour and get delayed. Deliberately EARLIER than Renovate's ~09:30 UTC
+    # run, so a database move is known before the day's PRs are opened.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image-scan-latest-db:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: trivy image — same gate, against the LATEST database
+        # TRIVY_DB_REF intentionally unset. See the header.
+        run: .github/scripts/scan-images.sh
