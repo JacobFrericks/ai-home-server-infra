@@ -1,7 +1,7 @@
 # memory-mcp — MCP server giving the local AI a persistent, hand-editable
 # markdown memory. No off-the-shelf image fits, so we build a tiny one (matches
 # the DIY comfyui-mcp pattern). Runs streamable-HTTP on loopback 127.0.0.1:9400.
-FROM python:3.14-slim
+FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6
 
 WORKDIR /app
 

@@ -1,7 +1,7 @@
 # comfyui-mcp — MCP server that drives the local ComfyUI (SDXL) for image gen.
 # No off-the-shelf image exists, so we build a tiny one (matches the DIY pattern
 # used elsewhere in this stack). Runs streamable-HTTP on loopback 127.0.0.1:9300.
-FROM python:3.14-slim
+FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6
 
 WORKDIR /app
 
