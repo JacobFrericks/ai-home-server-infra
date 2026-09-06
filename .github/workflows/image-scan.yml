@@ -53,7 +53,7 @@ jobs:
       # If you change this pin by hand, regenerate BOTH baselines against
       # the new database in the same commit -- a pin and a baseline cut from
       # different databases is how this goes quietly wrong.
-      TRIVY_DB_REF: ghcr.io/aquasecurity/trivy-db:2@sha256:27b85212b663ffd23b09e533fa8f73cf4dd8add3760e741c04ac61865bc02dfc
+      TRIVY_DB_REF: ghcr.io/aquasecurity/trivy-db:2@sha256:20e33b4a5dc13d526cc8a4b9d6895c45b35030bcb4bf362dce124fd2be69ee2a
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
