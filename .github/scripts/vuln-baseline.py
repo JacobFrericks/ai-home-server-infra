@@ -93,6 +93,21 @@ def cmd_check(args):
               f"and commit the updated baseline.")
         return 1
 
+    # A count BELOW the baseline is slack, and slack is not free: this gate
+    # only fails on an increase, so every accepted-but-absent finding is room a
+    # future regression can grow into unnoticed. Report it -- loudly enough to
+    # act on, quietly enough that an ordinary PR which happens to fix a CVE is
+    # not blocked on re-cutting a baseline.
+    slack = {sev: (n, counts.get(sev, 0))
+             for sev, n in accepted.items() if counts.get(sev, 0) < n}
+    if slack:
+        print(f"DRIFT [{args.target}]: baseline is looser than reality:")
+        for sev, (before, after) in sorted(slack.items()):
+            print(f"  {sev}: accepted {before}, actually {after}"
+                  f" -- {before - after} finding(s) of slack")
+        print(f"Tighten it with: python3 .github/scripts/vuln-baseline.py generate "
+              f"--scan {args.scan} --baseline {args.baseline} --target '{args.target}'")
+
     print(f"OK [{args.target}]: " +
           ", ".join(f"{n} {sev}" for sev, n in sorted(counts.items())) +
           " -- none higher than accepted")

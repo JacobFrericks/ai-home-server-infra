@@ -44,7 +44,7 @@ jobs:
         # The trivy image scan that used to live in this job moved to
         # .github/workflows/image-scan.yml; scan-images.sh is its body, so it
         # is checked here alongside the rest.
-        run: shellcheck -S warning deploy.sh scripts/*.sh .github/scripts/scan-images.sh
+        run: shellcheck -S warning deploy.sh scripts/*.sh .github/scripts/*.sh
 
       - name: Bandit — warn-only
         # ~8k LOC of glue and MCP servers taking LLM-supplied input (memory-mcp,

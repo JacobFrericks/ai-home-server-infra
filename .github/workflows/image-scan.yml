@@ -50,17 +50,30 @@ jobs:
       # uses; trivy accepts it on --db-repository, verified against 0.74.0
       # before adopting it.
       #
-      # If you change this pin by hand, regenerate BOTH baselines against
-      # the new database in the same commit -- a pin and a baseline cut from
-      # different databases is how this goes quietly wrong.
+      # If you change this pin, regenerate BOTH baselines against the new
+      # database in the same commit -- a pin and a baseline cut from
+      # different databases is how this goes quietly wrong. This is no
+      # longer advisory: check-db-pin-baseline.sh enforces it on every PR.
       TRIVY_DB_REF: ghcr.io/aquasecurity/trivy-db:2@sha256:20e33b4a5dc13d526cc8a4b9d6895c45b35030bcb4bf362dce124fd2be69ee2a
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Full history so the guard below can read the base revision of this
+          # workflow and of the baselines. Same reason ci.yml does it.
+          fetch-depth: 0
           # zizmor: a floating tag is one compromised upstream release away
           # from arbitrary code running with this repo's push access -- the
           # same reasoning check-image-digests.py applies to image tags.
           persist-credentials: false
+
+      # Runs BEFORE the scan on purpose: if the pin moved without its baselines,
+      # the scan's verdict is meaningless and the failure should name the real
+      # problem rather than a count.
+      - name: pin and baselines must move together
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: .github/scripts/check-db-pin-baseline.sh
 
       - name: trivy image — delta gate on the 2 self-built images
         run: .github/scripts/scan-images.sh
