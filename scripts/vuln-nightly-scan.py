@@ -22,12 +22,38 @@ needs no network call and no credential at all.
 exact shape has moved between trivy releases before. Rather than pin to one
 nested path, this walks the whole document looking for "Vulnerabilities"
 and "Misconfigurations" arrays wherever they appear.
+
+WHY THIS ALSO PUBLISHES THE DATABASE'S OWN IDENTITY:
+
+This scan runs against whatever vulnerability database is current that night,
+deliberately -- unlike the CI gate in .github/workflows/image-scan.yml, which
+pins one. Freshness is the entire point of scanning the LIVE cluster: it covers
+~30 running images nobody here builds, and a pinned database would stop telling
+us about real new findings in them between Renovate bumps.
+
+The cost of not pinning is that homeserver_vuln_new_total can move with NOTHING
+changed on this server -- the database simply learned something new about
+packages that were already installed. That is exactly what happened on
+2026-09-04 (HIGH 18 -> 53 with no commit), and on this path it means a phone
+alert for something nobody did.
+
+So rather than trade freshness away, make the two causes TELLABLE APART:
+homeserver_vuln_db_updated_timestamp_seconds is when the database content was
+built upstream. If the CVE count jumped and this moved on the same night, the
+database is the reason; if the count jumped and this did not move, something
+really did change in the cluster. In PromQL:
+
+    changes(homeserver_vuln_db_updated_timestamp_seconds[2d]) > 0
+
+Emitted only when trivy actually reported it -- a missing metric is honest,
+whereas a 0 would read as 1970 and quietly poison any graph or comparison.
 """
 import argparse
 import datetime
 import glob
 import json
 import os
+import re
 
 
 def walk_findings(node):
@@ -44,6 +70,50 @@ def walk_findings(node):
     elif isinstance(node, list):
         for item in node:
             yield from walk_findings(item)
+
+
+def db_timestamps(version_json_path):
+    """(updated_at, downloaded_at) as unix ints from `trivy version -f json`.
+
+    Returns (None, None) for every failure mode -- absent flag, missing file,
+    malformed JSON, older trivy that omits the block. This runs inside a
+    nightly cron whose real job is the CVE counts; a nice-to-have provenance
+    metric must never be the reason those go unpublished.
+    """
+    if not version_json_path:
+        return (None, None)
+    try:
+        with open(version_json_path) as f:
+            data = json.load(f)
+        db = data.get("VulnerabilityDB") or {}
+
+        def parse(value):
+            if not value:
+                return None
+            if not isinstance(value, str):
+                return None
+            text = value.strip().replace("Z", "+00:00")
+            # Trivy is a Go program, so it emits RFC3339 with NANOSECOND
+            # precision: "2026-09-06T12:11:07.913419471+00:00". Nine fractional
+            # digits are rejected outright by datetime.fromisoformat on Python
+            # < 3.11, which accepts only 3 or 6. Normalise the fraction to
+            # exactly 6 digits rather than assume the interpreter version --
+            # this script runs from a repo checkout on whatever python3 the
+            # host has.
+            match = re.search(r"\.(\d+)", text)
+            if match:
+                micros = (match.group(1) + "000000")[:6]
+                text = f"{text[:match.start()]}.{micros}{text[match.end():]}"
+            try:
+                return int(datetime.datetime.fromisoformat(text).timestamp())
+            except (ValueError, TypeError):
+                return None
+
+        return (parse(db.get("UpdatedAt")), parse(db.get("DownloadedAt")))
+    except (OSError, ValueError) as exc:
+        print(f"WARN: could not read trivy DB metadata ({exc}) -- "
+              f"database provenance metrics omitted this run.")
+        return (None, None)
 
 
 def load_accepted_counts(baseline_path):
@@ -89,6 +159,11 @@ def main():
     p.add_argument("--baseline", required=True,
                     help="e.g. /path/to/repo/security/baseline/live-cluster.json")
     p.add_argument("--out", required=True, help=".prom file to write")
+    p.add_argument("--trivy-version",
+                    help="`trivy version -f json` output, to publish which "
+                         "vulnerability database this run actually used. "
+                         "Optional: omitted or unreadable simply drops those "
+                         "two metrics rather than failing the run.")
     p.add_argument("--update-baseline", action="store_true",
                     help="write this run's counts back as the accepted baseline "
                          "(use once to seed it, or after deliberately accepting a rise)")
@@ -156,6 +231,23 @@ def main():
         "# TYPE homeserver_vuln_scan_last_success_timestamp_seconds gauge",
         f"homeserver_vuln_scan_last_success_timestamp_seconds {now}",
     ]
+
+    # Which database produced the counts above. See the module docstring: this
+    # is what separates "the cluster got worse" from "the database learned
+    # something", and this scan is unpinned on purpose.
+    db_updated, db_downloaded = db_timestamps(args.trivy_version)
+    if db_updated is not None:
+        lines += [
+            "# HELP homeserver_vuln_db_updated_timestamp_seconds Unix time the trivy vulnerability DB content was built upstream -- a change here explains a CVE count move that no commit caused.",
+            "# TYPE homeserver_vuln_db_updated_timestamp_seconds gauge",
+            f"homeserver_vuln_db_updated_timestamp_seconds {db_updated}",
+        ]
+    if db_downloaded is not None:
+        lines += [
+            "# HELP homeserver_vuln_db_downloaded_timestamp_seconds Unix time this host last fetched the trivy vulnerability DB.",
+            "# TYPE homeserver_vuln_db_downloaded_timestamp_seconds gauge",
+            f"homeserver_vuln_db_downloaded_timestamp_seconds {db_downloaded}",
+        ]
     tmp = f"{args.out}.tmp"
     with open(tmp, "w") as f:
         f.write("\n".join(lines) + "\n")
@@ -164,6 +256,12 @@ def main():
     print(f"fixable image CVEs: CRITICAL={fixable['CRITICAL']} HIGH={fixable['HIGH']}")
     print(f"accepted:           CRITICAL={accepted.get('CRITICAL', 0)} HIGH={accepted.get('HIGH', 0)}")
     print(f"above baseline (alertable): {new_count}")
+    if db_updated is not None:
+        print("vulnerability DB built upstream: "
+              f"{datetime.datetime.fromtimestamp(db_updated, datetime.timezone.utc).isoformat()}"
+              " (UNPINNED here on purpose -- see the module docstring)")
+    else:
+        print("vulnerability DB: provenance unavailable this run")
     print(f"total distinct CVE IDs seen in the live cluster: {len(all_findings)}")
     print(f"live posture findings (misconfig/rbac, reported not baselined): {len(posture_findings)}")
     for finding_id, severity in sorted(posture_findings)[:20]:

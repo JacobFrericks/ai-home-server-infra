@@ -11,6 +11,12 @@
 # ---------------------------------------------------------------------------
 # Step 2 of the security-scanning-ci plan (ai-home-server-k8s PR) gates PRs
 # with `trivy config` against rendered manifests. That catches a bad CHANGE.
+#
+# NOTE: unlike the CI gate (.github/workflows/image-scan.yml), this scan does
+# NOT pin the vulnerability database -- see vuln-nightly-scan.py's docstring.
+# Instead it publishes which database it used, so a count that moved because
+# the database moved is tellable apart from one that moved because the cluster
+# did.
 # It cannot catch a CVE disclosed today against an image that was merged last
 # month -- git did not change, the risk did. That is what this covers, and it
 # has to run against what is actually deployed, not the manifests:
@@ -123,6 +129,15 @@ do_run() {
     -f json -o "$SCAN_DIR/posture.json" \
     || { log "WARN: posture scan failed -- metrics will NOT be updated this run"; return 1; }
 
+  # Record WHICH vulnerability database the two scans above just used. This
+  # scan is unpinned on purpose (freshness is the point on the live cluster),
+  # so the CVE count can move with nothing changed here -- as it did on
+  # 2026-09-04. Asking trivy itself avoids guessing a cache path, and this runs
+  # AFTER the scans so it reports the database they actually resolved.
+  # Never fatal: a missing provenance file just drops two metrics.
+  "$TRIVY_BIN" version -f json > "$SCAN_DIR/trivy-version.json" 2>/dev/null \
+    || log "WARN: could not record trivy DB provenance -- counts still published"
+
   mkdir -p "$TEXTFILE_DIR"; chmod 755 "$TEXTFILE_DIR"
   # --baseline is the LIVE-CLUSTER count baseline, not the per-image ones in
   # security/baseline/images/ -- those cover only the 2 self-built images CI
@@ -132,6 +147,7 @@ do_run() {
     --vuln-scan "$SCAN_DIR/vuln.json" \
     --posture-scan "$SCAN_DIR/posture.json" \
     --baseline "$STACK_DIR/security/baseline/live-cluster.json" \
+    --trivy-version "$SCAN_DIR/trivy-version.json" \
     ${SEED_BASELINE:+--update-baseline} \
     --out "$TEXTFILE_DIR/homeserver_vuln.prom"
   chmod 644 "$TEXTFILE_DIR/homeserver_vuln.prom"
