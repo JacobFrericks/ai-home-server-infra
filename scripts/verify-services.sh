@@ -694,37 +694,18 @@ else
 fi
 
 # =========================================================================
-# Nightly vulnerability scan (trivy k8s against the live cluster)
+# Vulnerability scanning
 # =========================================================================
-# Same failure mode this repo has hit twice before: a check that only exists
-# on paper is indistinguishable from no check. Timer-enabled and metric-fresh
-# are checked separately, same as the offsite backup above -- a timer can be
-# enabled while every run has been failing silently for weeks.
-if systemctl is-enabled --quiet homeserver-vuln-scan.timer 2>/dev/null; then
-  record "Vuln scan timer" PASS "homeserver-vuln-scan.timer enabled"
-else
-  record "Vuln scan timer" FAIL "homeserver-vuln-scan.timer not enabled"
-fi
-
-VULN_METRIC=/var/lib/node_exporter/textfile_collector/homeserver_vuln.prom
-if [ -r "$VULN_METRIC" ]; then
-  vs_ts="$(awk '/^homeserver_vuln_scan_last_success_timestamp_seconds/{print $2}' "$VULN_METRIC")"
-  vs_age=$(( ($(date +%s) - ${vs_ts:-0}) / 3600 ))
-  if [ "${vs_ts:-0}" -gt 0 ] && [ "$vs_age" -lt 25 ]; then
-    record "Vuln scan freshness" PASS "last success ${vs_age}h ago"
-  else
-    record "Vuln scan freshness" FAIL "last success ${vs_age}h ago (>25h -- expected nightly)"
-  fi
-  vs_new="$(awk '/^homeserver_vuln_new_total/{print $2}' "$VULN_METRIC")"
-  if [ "${vs_new:-0}" -eq 0 ] 2>/dev/null; then
-    record "Vuln scan drift" PASS "no image CVEs outside the committed baseline"
-  else
-    record "Vuln scan drift" FAIL "${vs_new:-unknown} image CVE(s) not in security/baseline/images/*.json"
-  fi
-else
-  record "Vuln scan freshness" FAIL "no metric at $VULN_METRIC"
-  record "Vuln scan drift"     FAIL "no metric at $VULN_METRIC"
-fi
+# There is deliberately NOTHING to check here about a running scanner. The
+# nightly timer and the nightly GitHub canary were both removed on 2026-09-11:
+# they scanned on a schedule nobody was waiting on and alerted about database
+# movement rather than about any change made here. Scanning now happens only
+# where a human is already looking -- the PR gates in .github/workflows/ --
+# and reaches this machine on Renovate's weekly PR cadence.
+#
+# The baseline-age check below stays: those baselines still gate every PR, and
+# an accepted finding nobody revisits is the one real way that gate goes quietly
+# blind.
 
 # Baseline age: an accepted finding that is never revisited slowly becomes a
 # blanket exemption. 90 days matches vuln-baseline.py's STALE_DAYS in the

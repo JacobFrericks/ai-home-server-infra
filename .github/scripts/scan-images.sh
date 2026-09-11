@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Trivy delta gate for the two self-built images (memory-mcp, comfyui-mcp).
 #
-# Shared by BOTH scanning workflows so they cannot drift apart:
-#   .github/workflows/image-scan.yml          -- PR gate, PINNED database
-#   .github/workflows/image-scan-nightly.yml  -- canary, LATEST database
+# The body of .github/workflows/image-scan.yml, kept as a script so the same
+# verdict can be reproduced by hand on the server when a run is surprising.
 #
-# The only difference between them is $TRIVY_DB_REF. Set it to pin the
-# vulnerability database; leave it unset to let trivy resolve its default
-# repositories (whatever is current).
+# $TRIVY_DB_REF pins the vulnerability database; leaving it unset lets trivy
+# resolve whatever is current. image-scan.yml always sets it. The unset path is
+# kept for running this by hand -- it was also how the nightly canary ran,
+# before that canary was removed on 2026-09-11.
 #
 # WHY THE IMAGES ARE BUILT HERE RATHER THAN PULLED: memory-mcp and comfyui-mcp
 # are pushed ONLY to a loopback-only in-cluster registry (localhost:5000 on the
