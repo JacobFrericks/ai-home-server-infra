@@ -1,7 +1,5 @@
 {
   "target": "image:memory-mcp",
   "generated": "2026-09-13",
-  "accepted_counts": {
-    "HIGH": 44
-  }
+  "accepted_counts": {}
 }
