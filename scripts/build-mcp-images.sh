@@ -32,8 +32,8 @@
 # ---------------------------------------------------------------------------
 # WHY IT DOES NOT OPEN THE PULL REQUEST
 # ---------------------------------------------------------------------------
-# It would need a GitHub App key with write access, on this box. scripts/
-# setup-vuln-scan.sh already looked at that same question and wrote down the
+# It would need a GitHub App key with write access, on this box. The since-
+# removed setup-vuln-scan.sh looked at that same question and wrote down the
 # answer: the App keys live on the operator's laptop, not this server, and
 # shipping a second write credential to a second machine "would be a real
 # decision, not something to make inside a cron script". Nothing has changed,
@@ -67,7 +67,7 @@ IMAGES=(comfyui-mcp memory-mcp)
 UNIT=homeserver-mcp-image-builder
 
 # jacob's own copy, not the root-owned /etc/rancher/k3s/k3s.yaml -- matches what
-# verify-services.sh and setup-vuln-scan.sh already use.
+# verify-services.sh already uses.
 export KUBECONFIG=${KUBECONFIG:-/home/jacob/.kube/config}
 
 log() { printf '[mcp-build] %s\n' "$*"; }

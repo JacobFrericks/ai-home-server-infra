@@ -27,10 +27,21 @@ name: image-scan
 # fault. Run the `generate` command its failure message prints, decide whether
 # the new findings matter, and commit the new baseline onto Renovate's branch.
 #
-# Pinning trades away freshness, so it is deliberately paired with
-# image-scan-nightly.yml, which runs the identical scan against the LATEST
-# database every night. Pinned gate for a stable verdict; nightly canary so a
-# database move is still known within a day.
+# Pinning trades away freshness. That used to be paid for by
+# image-scan-nightly.yml, a canary that ran the identical scan against the
+# LATEST database every night -- REMOVED 2026-09-11, along with the home
+# server's own nightly timer, because between them they alerted about database
+# movement rather than about anything changed here.
+#
+# So the tradeoff is now explicit and one-sided, and worth stating plainly: a
+# CVE database move is no longer known within a day. It is known when Renovate
+# opens the trivy-db PR, which is the cadence this setup is meant to run at.
+# Scanning happens where someone is already looking -- on a pull request -- and
+# nowhere else.
+#
+# If a same-day signal is ever wanted again, the cheap version is a scheduled
+# run of THIS workflow with TRIVY_DB_REF unset; scan-images.sh still supports
+# that path. Re-adding it means re-accepting the nightly noise it caused.
 
 on:
   pull_request:
