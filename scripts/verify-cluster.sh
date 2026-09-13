@@ -234,6 +234,10 @@ fi
 # silently waiving it. A pending chart bump (git ahead of what's deployed) is
 # expected and reported as PEND, not FAIL -- upgrading these is a deliberate
 # manual act, not something this script should nag red about.
+#
+# If this reports "real drift" and syncing it appears to succeed yet changes
+# nothing, check 19 below is the one that explains why -- a stale render in
+# argocd-repo-server makes the sync a no-op that still reports Succeeded.
 baseline=$(kubectl -n argocd get app -o json 2>/dev/null | python3 -c '
 import json,sys
 d=json.load(sys.stdin)
@@ -384,6 +388,73 @@ if [[ -z "$unlabelled" ]]; then
   record "Pod Security labels" PASS "$nns namespaces, all levels declared"
 else
   record "Pod Security labels" FAIL "no enforce label: $unlabelled"
+fi
+
+# --- 19. a sync that reported success but closed nothing ---------------------
+# The failure mode this catches is the nastiest kind: one that reports itself
+# as fine. Observed 2026-09-13 on argo-cd -- a manual sync returned
+#
+#     phase: Succeeded
+#     message: "successfully synced (no more tasks)"
+#
+# and the application controller logged `serverside-applied` for all 67
+# resources. Nothing was written. The ConfigMaps' managedFields timestamps and
+# every pod's age still read a week old afterwards, and the app sat OutOfSync.
+#
+# Cause: argocd-repo-server was serving a CACHED render of the previous chart
+# version, so the diff was computed against the new chart while the sync
+# applied the old one. Sync applied manifests identical to live -- a genuine
+# no-op -- and the diff could never close. `refresh=hard` did not clear it.
+#
+# Fix: `kubectl rollout restart deployment/argocd-repo-server -n argocd`, wait
+# for the rollout, THEN re-trigger the sync. Restarting the renderer alone does
+# nothing; the sync has to be re-run afterwards.
+#
+# The signature is precise, which is why this can be checked rather than
+# guessed at: the last sync SUCCEEDED, it targeted the SAME revision the app is
+# being compared against right now, and the app is STILL OutOfSync. A normal
+# pending change looks different -- there the synced revision is the old one
+# and the compared revision is the new one, so the two do not match and this
+# stays quiet.
+#
+# 10-minute grace so a sync still settling is not called stuck.
+stucksync=$(kubectl -n argocd get app -o json 2>/dev/null | python3 -c '
+import json,sys,datetime
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(0)
+now=datetime.datetime.now(datetime.timezone.utc)
+out=[]
+for a in d.get("items",[]):
+    name=a["metadata"]["name"]
+    st=a.get("status",{}) or {}
+    sync=st.get("sync",{}) or {}
+    if sync.get("status")!="OutOfSync":
+        continue
+    op=st.get("operationState",{}) or {}
+    if op.get("phase")!="Succeeded":
+        continue
+    synced=(op.get("syncResult") or {}).get("revision")
+    if not synced or synced!=sync.get("revision"):
+        continue          # a genuinely newer revision is waiting -- not stuck
+    fin=op.get("finishedAt")
+    if fin:
+        try:
+            age=(now-datetime.datetime.fromisoformat(
+                fin.replace("Z","+00:00"))).total_seconds()
+            if age < 600:
+                continue  # still settling
+        except Exception:
+            pass
+    res=st.get("resources") or []
+    oos=sum(1 for r in res if r.get("status") not in ("Synced",None))
+    out.append(f"{name}({oos}/{len(res)} OutOfSync @ {synced})")
+print(" ".join(out))
+' 2>/dev/null)
+if [[ -z "$stucksync" ]]; then
+  record "Argo sync actually applies" PASS "no sync succeeded-but-changed-nothing"
+else
+  record "Argo sync actually applies" FAIL \
+    "$stucksync — sync is a no-op; restart argocd-repo-server, then re-sync"
 fi
 
 echo "------------------------------------------------------------------------"
