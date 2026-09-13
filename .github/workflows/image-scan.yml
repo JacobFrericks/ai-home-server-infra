@@ -54,7 +54,7 @@ jobs:
       # database in the same commit -- a pin and a baseline cut from
       # different databases is how this goes quietly wrong. This is no
       # longer advisory: check-db-pin-baseline.sh enforces it on every PR.
-      TRIVY_DB_REF: ghcr.io/aquasecurity/trivy-db:2@sha256:20e33b4a5dc13d526cc8a4b9d6895c45b35030bcb4bf362dce124fd2be69ee2a
+      TRIVY_DB_REF: ghcr.io/aquasecurity/trivy-db:2@sha256:1e21978c698f7c201b47ddc2d94e26d3d6a0a1f37f5c621fbce8bdaecf291178
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
