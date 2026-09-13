@@ -1,8 +1,7 @@
 {
   "target": "image:comfyui-mcp",
-  "generated": "2026-09-05",
+  "generated": "2026-09-13",
   "accepted_counts": {
-    "CRITICAL": 3,
-    "HIGH": 51
+    "HIGH": 44
   }
 }
