@@ -28,17 +28,30 @@ die() { printf "[assist-location] ERROR: %s\n" "$*" >&2; exit 1; }
 
 # Callers may override, e.g. setup-ha-weather.sh exposing the weather entity.
 ENTITIES="${ENTITIES:-device_tracker.jacob_s_phone person.jacob}"
-KUBECTL="sudo k3s kubectl"
+
+# ⚠️ NOT `sudo k3s kubectl`, and not `sudo docker` below, because sudo on this
+# box PROMPTS FOR A PASSWORD. That is fine by hand and fatal everywhere else:
+# verify-services.sh calls this with --check from cron and over ssh, where
+# there is no tty. sudo then fails, `set -e` aborts at the ha_token assignment
+# BEFORE die() can print, and the caller sees an empty string and exit 1. It
+# read as "no entity exposed to Assist" -- three red checks on 2026-09-14 while
+# HA was entirely healthy. A check that cannot tell "broken" from "could not
+# look" is worse than no check.
+#
+# jacob's own kubeconfig needs no sudo, and jacob is in the docker group. This
+# is the idiom verify-cluster.sh and verify-services.sh already use, and the
+# reason they were green while the scripts they call were not.
+export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/config}
 
 ha_token() {
-  $KUBECTL -n monitoring get secret ha-scrape-token \
+  kubectl -n monitoring get secret ha-scrape-token \
     -o jsonpath="{.data.ha_token}" 2>/dev/null | base64 -d | tr -d "\r\n"
 }
 
 run_ws() {  # $1 = mode (check|apply)
   local tok; tok="$(ha_token)"
   [ -n "$tok" ] || die "no HA token in secret monitoring/ha-scrape-token"
-  sudo docker exec -e HA_TOKEN="$tok" -e MODE="$1" -e ENTS="$ENTITIES" -i homeassistant python3 - <<"PY"
+  docker exec -e HA_TOKEN="$tok" -e MODE="$1" -e ENTS="$ENTITIES" -i homeassistant python3 - <<"PY"
 import asyncio, json, os, sys
 import aiohttp
 

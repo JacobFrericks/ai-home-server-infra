@@ -35,9 +35,15 @@ CONFIG=/home/jacob/Documents/homeassistant/configuration.yaml
 ENTITY=sensor.weather_at_my_location
 TRACKER=device_tracker.jacob_s_phone
 MARK_BEGIN="# >>> weather-at-my-location (managed by setup-ha-location-weather.sh) >>>"
-KUBECTL="sudo k3s kubectl"
 
-HA_TOKEN="$($KUBECTL -n monitoring get secret ha-scrape-token \
+# ⚠️ NOT `sudo k3s kubectl` -- sudo on this box PROMPTS FOR A PASSWORD, so the
+# assignment below fails under cron and over ssh, `set -e` aborts before die()
+# can print, and verify-services.sh reads the silence as "sensor missing,
+# stale, or not exposed". Three red checks on 2026-09-14 with HA entirely
+# healthy. jacob's own kubeconfig needs no sudo; same idiom as verify-cluster.sh.
+export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/config}
+
+HA_TOKEN="$(kubectl -n monitoring get secret ha-scrape-token \
   -o jsonpath='{.data.ha_token}' 2>/dev/null | base64 -d | tr -d '\r\n')"
 [ -n "$HA_TOKEN" ] || die "no HA token in secret monitoring/ha-scrape-token"
 export HA_TOKEN ENTITY TRACKER
