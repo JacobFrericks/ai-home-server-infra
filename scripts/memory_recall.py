@@ -73,7 +73,7 @@ def _slug(text: str) -> str:
 def _owner_key(user: dict | None) -> str:
     """Stable per-person key from Open WebUI's __user__, or "" if unknown.
 
-    Derived from the email local-part (jacob@example.com -> "jacob") because it
+    Derived from the email local-part (alex@example.com -> "alex") because it
     is stable, human-readable in the saved file, and survives a display-name
     change. Falls back to the account id, which is opaque but unique. Returns
     "" when there is no usable identity -- callers must then treat the request

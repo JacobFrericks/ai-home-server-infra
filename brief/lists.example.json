@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy to brief/lists.json (git-ignored) and fill in the real Home Assistant entity ids and names. `owner` must match the calendar feed colours in the MagicMirror config and the `owner` values in memory-mcp -- one vocabulary across the whole wall. `panel: false` keeps a list out of the fridge display while still allowing the AI to read it.",
+  "lists": [
+    {"entity": "todo.adult_a", "owner": "adult-a", "name": "Adult A", "auto": false, "panel": true},
+    {"entity": "todo.adult_b", "owner": "adult-b", "name": "Adult B", "auto": false, "panel": true},
+    {"entity": "todo.family_auto", "owner": "family", "name": "Suggested", "auto": true, "panel": true},
+    {"entity": "todo.shopping_list", "owner": "family", "name": "Shopping", "auto": false, "panel": false}
+  ]
+}

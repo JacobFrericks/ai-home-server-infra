@@ -21,7 +21,7 @@
           },
           {
             "name": "From",
-            "value": "Ankeny Christian Academy <office@aca.example.edu>"
+            "value": "Northside School <office@school.example.edu>"
           },
           {
             "name": "To",
@@ -91,7 +91,7 @@
         "headers": [
           {
             "name": "From",
-            "value": "Ankeny Parks <rec@ankeny.example.gov>"
+            "value": "City Parks <rec@parks.example.org>"
           },
           {
             "name": "to",
@@ -153,7 +153,7 @@
         "headers": [
           {
             "name": "From",
-            "value": "Ankeny Christian Academy <office@aca.example.edu>"
+            "value": "Northside School <office@school.example.edu>"
           },
           {
             "name": "Subject",

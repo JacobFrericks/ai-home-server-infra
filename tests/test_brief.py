@@ -50,14 +50,14 @@ class Calendar(unittest.TestCase):
 
     def test_other_days_are_excluded(self):
         names = [e["summary"] for e in gen.events_for(self.events, TODAY)]
-        self.assertNotIn("Great Wolf Lodge Reservation", names)
+        self.assertNotIn("Water park weekend", names)
 
     def test_all_day_sorts_before_timed(self):
         evs = gen.events_for(self.events, TODAY)
         self.assertTrue(evs[0]["all_day"])
         timed = [e for e in evs if not e["all_day"]]
         self.assertEqual([e["summary"] for e in timed],
-                         ["Cassie ACA", "Speech — Judah and Nora"])
+                         ["Sam Northside", "Speech — Robin and Quinn"])
 
     def test_time_format_is_short(self):
         f = gen._fmt_time
@@ -86,7 +86,7 @@ class Mail(unittest.TestCase):
 
     def test_sender_display_name_is_used(self):
         froms = [m["from"] for m in gen.mail_summaries(self.mail)]
-        self.assertIn("Ankeny Christian Academy", froms)
+        self.assertIn("Northside School", froms)
         self.assertFalse(any("<" in f for f in froms))
 
     def test_read_mail_is_skipped(self):
@@ -179,20 +179,20 @@ class Todos(unittest.TestCase):
         self.cols = gen.todo_columns(self.todos, TODAY)
 
     def test_completed_items_are_excluded(self):
-        jacob = next(c for c in self.cols if c["owner"] == "jacob")
+        col_a = next(c for c in self.cols if c["owner"] == "adult-a")
         self.assertNotIn("Pay the water bill",
-                         [i["text"] for i in jacob["items"]])
+                         [i["text"] for i in col_a["items"]])
 
     def test_undated_items_sort_last_not_first(self):
         """An empty `due` must not sort as the most urgent thing on the wall."""
-        jacob = next(c for c in self.cols if c["owner"] == "jacob")
-        self.assertEqual(jacob["items"][-1]["text"], "Fix the garage light")
+        col_a = next(c for c in self.cols if c["owner"] == "adult-a")
+        self.assertEqual(col_a["items"][-1]["text"], "Fix the garage light")
 
     def test_due_handles_date_and_datetime(self):
         """HA returns a bare date for some items and a full datetime for
         others. Both must render."""
-        cassie = next(c for c in self.cols if c["owner"] == "cassie")
-        labels = {i["text"]: i["due"] for i in cassie["items"]}
+        col_b = next(c for c in self.cols if c["owner"] == "adult-b")
+        labels = {i["text"]: i["due"] for i in col_b["items"]}
         self.assertEqual(labels["Return library books"], "Sat")
         self.assertEqual(labels["Reschedule haircut"], "")
 
@@ -245,7 +245,7 @@ class Panel(unittest.TestCase):
         self.assertLess(len(self.doc["headline"]), 120)
 
     def test_owner_keys_match_the_wall_colour_keys(self):
-        allowed = {"jacob", "cassie", "family"}
+        allowed = {"adult-a", "adult-b", "family"}
         self.assertTrue({c["owner"] for c in self.doc["todos"]} <= allowed)
         self.assertTrue({l["owner"] for l in self.doc["lines"]} <= allowed)
 

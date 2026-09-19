@@ -56,15 +56,50 @@ from datetime import date, datetime, timedelta
 MAX_LINES = 3
 MAX_ITEMS = 4
 
+# WHO LIVES HERE IS NOT IN THIS REPO.
+# ------------------------------------
+# This repo is PUBLIC. Household member names -- and the Home Assistant entity
+# ids derived from them -- are deployment-identifying, so the real mapping
+# lives in a git-ignored config file and only a neutral placeholder ships in
+# source. Same reasoning as the prompts/ dir; see prompts/README.md.
+#
 # Owner keys must match the calendar feed colours in the MagicMirror config and
-# the `owner` values in memory-mcp. One vocabulary across the whole wall.
-LIST_OWNERS = {
-    "todo.jacob": ("jacob", "Jacob", False),
-    "todo.cassie": ("cassie", "Cassie", False),
-    "todo.family_auto": ("family", "Suggested", True),
-    "todo.shopping_list": ("family", "Shopping", False),
-}
-PANEL_LISTS = ("todo.jacob", "todo.cassie", "todo.family_auto")
+# the `owner` values in memory-mcp: one vocabulary across the whole wall.
+#
+# Format (brief/lists.json, git-ignored):
+#   {"lists": [{"entity": "todo.<name>", "owner": "<key>", "name": "<label>",
+#               "auto": false, "panel": true}, ...]}
+LISTS_FILE = os.environ.get(
+    "BRIEF_LISTS", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "lists.json"))
+
+DEFAULT_LISTS = [
+    {"entity": "todo.adult_a", "owner": "adult-a", "name": "Adult A",
+     "auto": False, "panel": True},
+    {"entity": "todo.adult_b", "owner": "adult-b", "name": "Adult B",
+     "auto": False, "panel": True},
+    {"entity": "todo.family_auto", "owner": "family", "name": "Suggested",
+     "auto": True, "panel": True},
+    {"entity": "todo.shopping_list", "owner": "family", "name": "Shopping",
+     "auto": False, "panel": False},
+]
+
+
+def load_lists(path: str = None) -> list[dict]:
+    """The household's to-do lists, from config if present else placeholders.
+
+    Missing config is NOT an error: the fixtures and tests run on the
+    placeholders, which is what lets the whole pipeline be developed before
+    anyone's real lists exist.
+    """
+    path = path or LISTS_FILE
+    try:
+        with open(path, encoding="utf-8") as f:
+            cfg = json.load(f)
+        lists = cfg.get("lists") or []
+        return lists or DEFAULT_LISTS
+    except (OSError, ValueError):
+        return DEFAULT_LISTS
 
 
 # --- Google Calendar ---------------------------------------------------------
@@ -131,7 +166,7 @@ def _header(msg: dict, name: str) -> str:
 
 
 def _sender_name(from_header: str) -> str:
-    """"Ankeny Christian Academy <office@...>" -> "Ankeny Christian Academy"."""
+    """"Northside School <office@...>" -> "Northside School"."""
     if "<" in from_header:
         name = from_header.split("<", 1)[0].strip().strip('"')
         if name:
@@ -273,13 +308,15 @@ def _due_label(due: str | None, today: date) -> str:
     return d.strftime("%b ") + str(d.day)
 
 
-def todo_columns(todos: dict, today: date) -> list[dict]:
+def todo_columns(todos: dict, today: date, lists: list[dict] = None) -> list[dict]:
     """The panel's columns, open items only, soonest-due first."""
     resp = todos.get("service_response", todos)
     cols = []
-    for entity in PANEL_LISTS:
-        owner, name, auto = LIST_OWNERS[entity]
-        raw = (resp.get(entity) or {}).get("items", [])
+    for spec in (lists if lists is not None else load_lists()):
+        if not spec.get("panel", True):
+            continue
+        owner, name, auto = spec["owner"], spec["name"], spec.get("auto", False)
+        raw = (resp.get(spec["entity"]) or {}).get("items", [])
         # `completed` items stay in the response. A wall full of finished tasks
         # is noise, and worse, it hides the open ones below the cut.
         items = [i for i in raw if i.get("status") != "completed"]
@@ -297,7 +334,8 @@ def todo_columns(todos: dict, today: date) -> list[dict]:
 
 # --- assembly ----------------------------------------------------------------
 
-def build(events: dict, mail: dict, todos: dict, today: date) -> dict:
+def build(events: dict, mail: dict, todos: dict, today: date,
+          lists: list[dict] = None) -> dict:
     todays = events_for(events, today)
 
     lines = []
@@ -315,7 +353,7 @@ def build(events: dict, mail: dict, todos: dict, today: date) -> dict:
         "date": today.isoformat(),
         "headline": headline,
         "lines": lines,
-        "todos": todo_columns(todos, today),
+        "todos": todo_columns(todos, today, lists),
         # Not rendered by the panel today. Carried so the mail path is exercised
         # end to end, and so a later "what did the bot read?" view has it.
         "mail": mail_summaries(mail),
