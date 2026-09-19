@@ -75,8 +75,8 @@ class RecallBoundary(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         self.recall = _load("scripts/memory_recall.py", "recall_t", self.dir)
         self.write("shared", "household", "The wifi password is on the fridge.")
-        self.write("jacobs", "jacob", "Jacob is allergic to shellfish.")
-        self.write("cassies", "cassie", "Cassie's passport expires in March.")
+        self.write("alexs", "alex", "Alex is allergic to shellfish.")
+        self.write("sams", "sam", "Sam's passport expires in March.")
         self.write("legacy", None, "A fact saved before owners existed.")
 
     def write(self, name, owner, content):
@@ -94,15 +94,15 @@ class RecallBoundary(unittest.TestCase):
     # --- the load-bearing test ---------------------------------------------
 
     def test_b_cannot_see_a(self):
-        """Cassie's chat must never contain Jacob's private fact."""
-        text = self.inject({"email": "cassie@example.com", "id": "u2"})
+        """Sam's chat must never contain Alex's private fact."""
+        text = self.inject({"email": "sam@example.com", "id": "u2"})
         self.assertIn("passport", text)          # her own
         self.assertIn("wifi password", text)     # shared
         self.assertNotIn("shellfish", text)      # HIS -- the leak
-        self.assertNotIn("Jacob is allergic", text)
+        self.assertNotIn("Alex is allergic", text)
 
     def test_a_cannot_see_b(self):
-        text = self.inject({"email": "jacob@example.com", "id": "u1"})
+        text = self.inject({"email": "alex@example.com", "id": "u1"})
         self.assertIn("shellfish", text)
         self.assertIn("wifi password", text)
         self.assertNotIn("passport", text)
@@ -123,7 +123,7 @@ class RecallBoundary(unittest.TestCase):
 
     def test_owner_key_prefers_email_then_id(self):
         k = self.recall._owner_key
-        self.assertEqual(k({"email": "Jacob.F@example.com", "id": "x"}), "jacob-f")
+        self.assertEqual(k({"email": "Alex.P@example.com", "id": "x"}), "alex-p")
         self.assertEqual(k({"email": "", "id": "abc-123"}), "abc-123")
         self.assertEqual(k({}), "")
         self.assertEqual(k(None), "")
@@ -133,13 +133,13 @@ class RecallBoundary(unittest.TestCase):
     def test_task_requests_still_skipped(self):
         body = {"messages": [{"role": "user", "content": "hi"}]}
         out = asyncio.run(self.recall.Filter().inlet(
-            body, __user__={"email": "jacob@example.com"},
+            body, __user__={"email": "alex@example.com"},
             __metadata__={"task": "title_generation"}))
         self.assertEqual(out["messages"], [{"role": "user", "content": "hi"}])
 
     def test_injection_is_idempotent(self):
         f = self.recall.Filter()
-        user = {"email": "jacob@example.com"}
+        user = {"email": "alex@example.com"}
         body = {"messages": [{"role": "system", "content": "Base prompt."},
                              {"role": "user", "content": "hi"}]}
         for _ in range(3):
@@ -150,7 +150,7 @@ class RecallBoundary(unittest.TestCase):
 
     def test_block_names_the_person_for_save(self):
         """The model learns who it is talking to, so it can set owner on save."""
-        self.assertIn("jacob", self.inject({"email": "jacob@example.com"}))
+        self.assertIn("alex", self.inject({"email": "alex@example.com"}))
 
 
 class ServerStorage(unittest.TestCase):
@@ -161,12 +161,12 @@ class ServerStorage(unittest.TestCase):
         self.srv = _load("memory-mcp/server.py", "srv_t", self.dir)
 
     def test_owner_round_trips(self):
-        rendered = self.srv._render("n", "d", "user", "body", "cassie")
-        self.assertIn("owner: cassie", rendered)
+        rendered = self.srv._render("n", "d", "user", "body", "sam")
+        self.assertIn("owner: sam", rendered)
         p = os.path.join(self.dir, "n.md")
         with open(p, "w") as f:
             f.write(rendered)
-        self.assertEqual(self.srv._parse(p)["owner"], "cassie")
+        self.assertEqual(self.srv._parse(p)["owner"], "sam")
 
     def test_missing_owner_parses_as_household(self):
         p = os.path.join(self.dir, "old.md")
@@ -180,11 +180,11 @@ class ServerStorage(unittest.TestCase):
         # be invisible to everyone rather than shared.
         for bad in ("", None, "   ", "!!!", "///"):
             self.assertEqual(self.srv._norm_owner(bad), self.srv.HOUSEHOLD)
-        self.assertEqual(self.srv._norm_owner("Jacob F"), "jacob-f")
+        self.assertEqual(self.srv._norm_owner("Alex P"), "alex-p")
 
     def test_visible_to_matches_the_filter(self):
-        mems = [{"owner": "household"}, {"owner": "jacob"}, {"owner": "cassie"}]
-        self.assertEqual(len(self.srv._visible_to(mems, "jacob")), 2)
+        mems = [{"owner": "household"}, {"owner": "alex"}, {"owner": "sam"}]
+        self.assertEqual(len(self.srv._visible_to(mems, "alex")), 2)
         self.assertEqual(len(self.srv._visible_to(mems, "")), 1)
 
 

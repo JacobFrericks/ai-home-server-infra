@@ -55,6 +55,13 @@ jobs:
         # healthy, and quietly hand over the wrong facts.
         run: python3 tests/test_memory_owner.py
 
+      - name: Unit tests — brief generator
+        # Also a hard gate. Mostly these pin the three Gmail MIME traps
+        # (nested parts, base64url, attachment parts) and the Calendar all-day
+        # vs timed split -- shape bugs that would surface as a silently empty
+        # wall panel rather than an error.
+        run: python3 tests/test_brief.py
+
       - name: Bandit — warn-only
         # ~8k LOC of glue and MCP servers taking LLM-supplied input (memory-mcp,
         # comfyui-mcp, scripts/, the HA custom_components except the vendored

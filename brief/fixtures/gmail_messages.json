@@ -1,0 +1,174 @@
+{
+  "_comment": "Gmail API v1 users.messages.get responses, format=full: https://developers.google.com/gmail/api/reference/rest/v1/users.messages/get . Wrapped in a list because the real flow is users.messages.list (ids only) then one get per id. THREE shape traps encoded here: (1) payload.headers is a LIST of name/value pairs and the casing is whatever the sending server used -- this fixture has both 'Subject' and 'subject'. (2) The body is base64URL (-_ not +/) and unpadded, and it lives in payload.body.data for a simple message but in payload.parts[] for a multipart one -- and parts NEST, so a multipart/mixed carrying an attachment holds the real text one level down. (3) format=metadata returns no body at all; the client must ask for format=full.",
+  "messages": [
+    {
+      "id": "19923a4f8c2e1b00",
+      "threadId": "19923a4f8c2e1b00",
+      "labelIds": [
+        "UNREAD",
+        "INBOX"
+      ],
+      "snippet": "Picture day has been moved to Friday October 3. Order forms are due back the week before. Please send the form with your student...",
+      "internalDate": "1758290400000",
+      "sizeEstimate": 8421,
+      "payload": {
+        "partId": "",
+        "mimeType": "multipart/alternative",
+        "headers": [
+          {
+            "name": "Delivered-To",
+            "value": "family-bot@example.com"
+          },
+          {
+            "name": "From",
+            "value": "Northside School <office@school.example.edu>"
+          },
+          {
+            "name": "To",
+            "value": "family-bot@example.com"
+          },
+          {
+            "name": "Subject",
+            "value": "Picture Day moved to October 3"
+          },
+          {
+            "name": "Date",
+            "value": "Fri, 19 Sep 2026 09:00:00 -0500"
+          },
+          {
+            "name": "Message-ID",
+            "value": "<CA+abc123@mail.example.edu>"
+          }
+        ],
+        "body": {
+          "size": 0
+        },
+        "parts": [
+          {
+            "partId": "0",
+            "mimeType": "text/plain",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "text/plain; charset=UTF-8"
+              }
+            ],
+            "body": {
+              "size": 313,
+              "data": "RGVhciBGYW1pbGllcywKClBpY3R1cmUgZGF5IGhhcyBiZWVuIE1PVkVEIHRvIEZyaWRheSwgT2N0b2JlciAzLiBJdCB3YXMgcHJldmlvdXNseSBzY2hlZHVsZWQKZm9yIFNlcHRlbWJlciAyNi4KCk9yZGVyIGZvcm1zIGFyZSBkdWUgYmFjayB0aGUgd2VlayBiZWZvcmUgLS0gcGxlYXNlIHNlbmQgdGhlIGZvcm0gd2l0aCB5b3VyCnN0dWRlbnQgYnkgRnJpZGF5LCBTZXB0ZW1iZXIgMjYuIEZvcm1zIHdlbnQgaG9tZSBpbiBiYWNrcGFja3Mgb24gTW9uZGF5LgoKUmV0YWtlcyB3aWxsIGJlIE5vdmVtYmVyIDE0LgoKVGhhbmsgeW91LApBQ0EgT2ZmaWNlCg"
+            }
+          },
+          {
+            "partId": "1",
+            "mimeType": "text/html",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=UTF-8"
+              }
+            ],
+            "body": {
+              "size": 109,
+              "data": "PGh0bWw-PGJvZHk-PHA-RGVhciBGYW1pbGllcyw8L3A-PHA-UGljdHVyZSBkYXkgaGFzIGJlZW4gPGI-TU9WRUQ8L2I-IHRvIEZyaWRheSwgT2N0b2JlciAzLjwvcD48L2JvZHk-PC9odG1sPg"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "19923b60d1f4c211",
+      "threadId": "19923b60d1f4c211",
+      "labelIds": [
+        "UNREAD",
+        "INBOX"
+      ],
+      "snippet": "Fall soccer registration closes September 30. Late signups cannot be guaranteed a roster spot...",
+      "internalDate": "1758304800000",
+      "sizeEstimate": 5310,
+      "payload": {
+        "partId": "",
+        "mimeType": "multipart/mixed",
+        "headers": [
+          {
+            "name": "From",
+            "value": "City Parks <rec@parks.example.org>"
+          },
+          {
+            "name": "to",
+            "value": "family-bot@example.com"
+          },
+          {
+            "name": "subject",
+            "value": "Fall soccer registration closes Sept 30"
+          },
+          {
+            "name": "Date",
+            "value": "Fri, 19 Sep 2026 13:00:00 -0500"
+          }
+        ],
+        "body": {
+          "size": 0
+        },
+        "parts": [
+          {
+            "partId": "0",
+            "mimeType": "multipart/alternative",
+            "body": {
+              "size": 0
+            },
+            "parts": [
+              {
+                "partId": "0.0",
+                "mimeType": "text/plain",
+                "body": {
+                  "size": 262,
+                  "data": "RmFsbCBzb2NjZXIgcmVnaXN0cmF0aW9uIGNsb3NlcyBTZXB0ZW1iZXIgMzAgYXQgMTE6NTlwbS4KCkxhdGUgc2lnbnVwcyBjYW5ub3QgYmUgZ3VhcmFudGVlZCBhIHJvc3RlciBzcG90LiBGZWVzIGFyZSAkODUgcGVyIHBsYXllciwKJDcwIGZvciBlYWNoIGFkZGl0aW9uYWwgc2libGluZy4KCkZpcnN0IHByYWN0aWNlIGlzIHRoZSB3ZWVrIG9mIE9jdG9iZXIgNi4gVGVhbSBhc3NpZ25tZW50cyBnbyBvdXQgT2N0b2JlciAzLgoKQW5rZW55IFBhcmtzICYgUmVjCg"
+                }
+              }
+            ]
+          },
+          {
+            "partId": "1",
+            "mimeType": "application/pdf",
+            "filename": "soccer-flyer.pdf",
+            "body": {
+              "attachmentId": "ANGjdJ_attach_0.1",
+              "size": 284119
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "19923c71e2a5d322",
+      "threadId": "19923a4f8c2e1b00",
+      "labelIds": [
+        "INBOX"
+      ],
+      "snippet": "Reminder: this is the third message in the picture day thread. Nothing new here.",
+      "internalDate": "1758308400000",
+      "sizeEstimate": 3120,
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {
+            "name": "From",
+            "value": "Northside School <office@school.example.edu>"
+          },
+          {
+            "name": "Subject",
+            "value": "Re: Picture Day moved to October 3"
+          },
+          {
+            "name": "Date",
+            "value": "Fri, 19 Sep 2026 14:00:00 -0500"
+          }
+        ],
+        "body": {
+          "size": 81,
+          "data": "SnVzdCBjb25maXJtaW5nIHRoZSBPY3RvYmVyIDMgZGF0ZSB3b3JrcyBmb3IgdGhlIHdob2xlIHNjaG9vbC4KTm8gYWN0aW9uIG5lZWRlZC4K"
+        }
+      }
+    }
+  ]
+}

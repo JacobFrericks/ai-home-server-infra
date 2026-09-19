@@ -1,0 +1,33 @@
+{
+  "_comment": "Home Assistant todo.get_items service response, as returned by POST /api/services/todo/get_items?return_response with {\"entity_id\": [...]}. The real payload nests under service_response, keyed by entity_id. Item fields per the TodoItem spec: uid, summary, status (needs_action|completed), and OPTIONAL due (a bare date OR a datetime) and description. `due` being absent on some items, and being two different types, is the part that breaks naive sorting.",
+  "changed_states": [],
+  "service_response": {
+    "todo.adult_a": {
+      "items": [
+        {"uid": "a1f3c9d2", "summary": "Call the dentist", "status": "needs_action", "due": "2026-09-20"},
+        {"uid": "b2e4d0a3", "summary": "Renew car tabs", "status": "needs_action", "due": "2026-09-25"},
+        {"uid": "c3d5e1b4", "summary": "Fix the garage light", "status": "needs_action"},
+        {"uid": "d4c6f2a5", "summary": "Pay the water bill", "status": "completed", "due": "2026-09-15"}
+      ]
+    },
+    "todo.adult_b": {
+      "items": [
+        {"uid": "e5b7a3c6", "summary": "Quinn dance shoes", "status": "needs_action", "due": "2026-09-24"},
+        {"uid": "f6a8b4d7", "summary": "Reschedule haircut", "status": "needs_action"},
+        {"uid": "07b9c5e8", "summary": "Return library books", "status": "needs_action", "due": "2026-09-26T17:00:00-05:00"}
+      ]
+    },
+    "todo.family_auto": {
+      "items": [
+        {"uid": "18cad6f9", "summary": "Picture day form", "status": "needs_action", "due": "2026-10-03", "description": "From office@school.example.edu, 19 Sep"},
+        {"uid": "29dbe70a", "summary": "Soccer signup closes", "status": "needs_action", "due": "2026-09-30", "description": "From rec@parks.example.org, 19 Sep"}
+      ]
+    },
+    "todo.shopping_list": {
+      "items": [
+        {"uid": "3aecf81b", "summary": "Milk", "status": "needs_action"},
+        {"uid": "4bfd092c", "summary": "Coffee", "status": "needs_action"}
+      ]
+    }
+  }
+}

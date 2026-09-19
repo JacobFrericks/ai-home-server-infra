@@ -286,7 +286,7 @@ the Open WebUI chat only (not the voice assistant).
 **Memories are per-person.** Every file carries an `owner`: `household` (the
 shared pool everyone sees) or one person's key. Each account is shown the
 household pool **plus its own facts, and nobody else's**. The owner key is the
-local-part of the account's email — `cassie@…` becomes `cassie`. Files written
+local-part of the account's email — `sam@…` becomes `sam`. Files written
 before this existed have no `owner:` line and read as `household`, which is
 correct: there was only one account for them to belong to.
 
