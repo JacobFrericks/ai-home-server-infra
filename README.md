@@ -279,9 +279,16 @@ warning on each restart; `wyzeapy` also trips HA's "blocking call to
 The **Open WebUI chat** (`assistant`) has a persistent long-term memory: it
 recalls what it knows about you at the start of every conversation and saves
 salient facts as it goes. Memories are **plain markdown files** — one fact per
-file with frontmatter (`name`/`description`/`type`) plus a `MEMORY.md` index —
-so they are greppable, hand-editable, and backed up as text. Scope is the Open
-WebUI chat only (not the voice assistant).
+file with frontmatter (`name`/`description`/`type`/`owner`) plus a `MEMORY.md`
+index — so they are greppable, hand-editable, and backed up as text. Scope is
+the Open WebUI chat only (not the voice assistant).
+
+**Memories are per-person.** Every file carries an `owner`: `household` (the
+shared pool everyone sees) or one person's key. Each account is shown the
+household pool **plus its own facts, and nobody else's**. The owner key is the
+local-part of the account's email — `cassie@…` becomes `cassie`. Files written
+before this existed have no `owner:` line and read as `household`, which is
+correct: there was only one account for them to belong to.
 
 ```
 chat starts
@@ -297,7 +304,17 @@ model reasons — it already "knows" you
   `save_memory` / `list_memories` / `update_memory` / `delete_memory`, attached
   to the `assistant` model as an always-on tool (`meta.toolIds` gains
   `server:mcp:memory`, alongside `searxng-web` / `home-assistant`). It runs as
-  `1000:1000` so the files stay jacob-owned and hand-editable.
+  `1000:1000` so the files stay jacob-owned and hand-editable. `save_memory`
+  takes an `owner` argument, defaulting to `household`.
+
+> **Where the privacy rule actually lives.** Not in memory-mcp. An MCP tool
+> call carries no caller identity, so the write side cannot tell who is
+> talking and a model could label a fact with anyone's name. `memory_recall`
+> is the boundary, because Open WebUI *does* pass it `__user__`. It **fails
+> closed**: an unknown or missing user gets the household pool only, never the
+> full set. `tests/test_memory_owner.py` asserts exactly this and is a hard
+> gate in CI — a regression there would leak one person's notes into another
+> person's chat while every health check stayed green.
 - **Read half — `memory_recall` filter**: an Open WebUI inlet Function **scoped
   to `assistant`** that loads all memory files and prepends them to the system
   prompt each real turn (it skips internal title/tag/follow-up generations). It

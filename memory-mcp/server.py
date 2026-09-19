@@ -38,6 +38,24 @@ INDEX = "MEMORY.md"
 # Taxonomy tuned for a home assistant. Unknown types fold to "reference".
 TYPES = ("user", "household", "project", "reference")
 
+# WHOSE FACT IS THIS? Every memory carries an `owner`. HOUSEHOLD is the shared
+# pool everyone sees; anything else is one person's own and is shown only to
+# them. The read side (scripts/memory_recall.py) is what ENFORCES this -- see
+# the note on save_memory below for why the write side cannot.
+HOUSEHOLD = "household"
+
+
+def _norm_owner(o: str) -> str:
+    """Owner keys are slugs. Empty or unsluggable input folds to the shared pool.
+
+    Deliberately NOT _slug(): that one invents a unique `memory-<timestamp>`
+    name when its input slugs to nothing, which is right for naming a file and
+    wrong here -- it would mint an owner key no account can ever match, and the
+    memory would be silently invisible to every single person.
+    """
+    o = re.sub(r"[^a-z0-9]+", "-", (o or "").strip().lower()).strip("-")[:64]
+    return o or HOUSEHOLD
+
 mcp = MCPServer("memory")
 
 # A tool's description is prompt engineering: it is the text the model reads when
@@ -111,16 +129,22 @@ def _parse(path: str) -> dict | None:
         "name": meta.get("name") or os.path.splitext(os.path.basename(path))[0],
         "description": meta.get("description", ""),
         "type": _norm_type(meta.get("type", "")),
+        # Files written before multi-user support have no `owner:` line. They
+        # predate any second account, so folding them to the shared pool is
+        # correct -- there was only one person for them to belong to.
+        "owner": _norm_owner(meta.get("owner", "")),
         "content": body.strip(),
     }
 
 
-def _render(name: str, description: str, mtype: str, content: str) -> str:
+def _render(name: str, description: str, mtype: str, content: str,
+            owner: str = HOUSEHOLD) -> str:
     return (
         "---\n"
         f"name: {name}\n"
         f"description: {description}\n"
         f"type: {mtype}\n"
+        f"owner: {owner}\n"
         "---\n\n"
         f"{content.strip()}\n"
     )
@@ -139,6 +163,18 @@ def _all() -> list[dict]:
     return out
 
 
+def _visible_to(mems: list[dict], owner: str) -> list[dict]:
+    """The shared pool, plus `owner`'s own facts.
+
+    FAIL CLOSED: with no owner (an unauthenticated or unrecognised caller) this
+    returns the shared pool ONLY -- never everything. The same rule is
+    duplicated in scripts/memory_recall.py, which is the half that actually
+    guards the chat; keep the two in step.
+    """
+    who = _norm_owner(owner) if owner else HOUSEHOLD
+    return [m for m in mems if m["owner"] in (HOUSEHOLD, who)]
+
+
 def _rebuild_index() -> None:
     """Maintain MEMORY.md — a human-browsable index, one line per fact."""
     mems = _all()
@@ -153,7 +189,10 @@ def _rebuild_index() -> None:
         lines.append(f"## {t}")
         for m in group:
             desc = m["description"] or (m["content"][:80])
-            lines.append(f"- [{m['name']}]({m['name']}.md) — {desc}")
+            # The owner is shown for personal facts only -- tagging every shared
+            # fact "(household)" would be noise on what is mostly a shared index.
+            who = "" if m["owner"] == HOUSEHOLD else f" _({m['owner']})_"
+            lines.append(f"- [{m['name']}]({m['name']}.md){who} — {desc}")
         lines.append("")
     _write_atomic(os.path.join(MEMORY_DIR, INDEX), "\n".join(lines).rstrip() + "\n")
 
@@ -162,7 +201,8 @@ def _rebuild_index() -> None:
 
 @mcp.tool(description=_desc("save_memory"))
 def save_memory(content: str, type: str = "user",
-                name: str = "", description: str = "") -> str:
+                name: str = "", description: str = "",
+                owner: str = HOUSEHOLD) -> str:
     """Save a long-term memory about the user.
 
     Args:
@@ -171,6 +211,10 @@ def save_memory(content: str, type: str = "user",
       name: OPTIONAL kebab-case id; derived from the content if omitted.
             Reusing an existing name updates that memory.
       description: OPTIONAL one-line summary; the content is used if omitted.
+      owner: "household" (everyone in the house sees it — the default) or the
+             key of the person it belongs to, which the recall block names as
+             "You are talking to <key>". Use the person's key for anything
+             personal; use "household" for shared facts.
     """
     content = (content or "").strip()
     if not content:
@@ -178,15 +222,22 @@ def save_memory(content: str, type: str = "user",
     mtype = _norm_type(type)
     slug = _slug(name or content)
     desc = (description or content).strip().splitlines()[0][:200]
-    _write_atomic(_path(slug), _render(slug, desc, mtype, content))
+    who = _norm_owner(owner)
+    _write_atomic(_path(slug), _render(slug, desc, mtype, content, who))
     _rebuild_index()
-    return f"Saved memory '{slug}' ({mtype})."
+    return f"Saved memory '{slug}' ({mtype}, owner: {who})."
 
 
 @mcp.tool(description=_desc("list_memories"))
-def list_memories() -> str:
-    """List everything currently in long-term memory about the user, grouped by type."""
-    mems = _all()
+def list_memories(owner: str = "") -> str:
+    """List long-term memories, grouped by type.
+
+    Args:
+      owner: OPTIONAL. Pass the current person's key to see the shared
+             household facts plus that person's own. Omit to list the shared
+             facts only.
+    """
+    mems = _visible_to(_all(), owner)
     if not mems:
         return "No memories saved yet."
     lines = []
@@ -196,13 +247,14 @@ def list_memories() -> str:
             continue
         lines.append(f"[{t}]")
         for m in group:
-            lines.append(f"  - {m['name']}: {m['content']}")
+            who = "" if m["owner"] == HOUSEHOLD else f" ({m['owner']})"
+            lines.append(f"  - {m['name']}{who}: {m['content']}")
     return "\n".join(lines)
 
 
 @mcp.tool(description=_desc("update_memory"))
 def update_memory(name: str, content: str = "", description: str = "",
-                  type: str = "") -> str:
+                  type: str = "", owner: str = "") -> str:
     """Update an existing memory by its `name`. Only the fields you pass are changed."""
     slug = _slug(name)
     existing = _parse(_path(slug))
@@ -210,9 +262,11 @@ def update_memory(name: str, content: str = "", description: str = "",
         return f"No memory named '{slug}'. Use save_memory to create it."
     new_content = content.strip() or existing["content"]
     new_type = _norm_type(type) if type else existing["type"]
+    new_owner = _norm_owner(owner) if owner else existing["owner"]
     new_desc = (description.strip() or existing["description"]
                 or new_content.splitlines()[0][:200])
-    _write_atomic(_path(slug), _render(slug, new_desc, new_type, new_content))
+    _write_atomic(_path(slug),
+                  _render(slug, new_desc, new_type, new_content, new_owner))
     _rebuild_index()
     return f"Updated memory '{slug}'."
 
