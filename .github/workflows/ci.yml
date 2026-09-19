@@ -46,6 +46,15 @@ jobs:
         # is checked here alongside the rest.
         run: shellcheck -S warning deploy.sh scripts/*.sh .github/scripts/*.sh
 
+      - name: Unit tests — memory privacy boundary
+        # A HARD gate, unlike bandit below. These assert that one family
+        # member's private memories never reach another member's chat, and
+        # that an unidentified caller sees less rather than more. A regression
+        # here is a privacy failure that no other check in this repo would
+        # catch -- the filter would still start, still inject, still look
+        # healthy, and quietly hand over the wrong facts.
+        run: python3 tests/test_memory_owner.py
+
       - name: Bandit — warn-only
         # ~8k LOC of glue and MCP servers taking LLM-supplied input (memory-mcp,
         # comfyui-mcp, scripts/, the HA custom_components except the vendored
