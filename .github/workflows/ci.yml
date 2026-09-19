@@ -55,6 +55,13 @@ jobs:
         # healthy, and quietly hand over the wrong facts.
         run: python3 tests/test_memory_owner.py
 
+      - name: Unit tests — brief generator
+        # Also a hard gate. Two of these assert that a forwarded email's body
+        # and snippet never reach brief.json: the fridge panel is read by
+        # anyone standing in the kitchen, and a school mail can carry another
+        # family's details in its reply chain.
+        run: python3 tests/test_brief.py
+
       - name: Bandit — warn-only
         # ~8k LOC of glue and MCP servers taking LLM-supplied input (memory-mcp,
         # comfyui-mcp, scripts/, the HA custom_components except the vendored

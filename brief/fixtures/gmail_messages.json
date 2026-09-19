@@ -1,0 +1,59 @@
+{
+  "_comment": "Gmail API v1 users.messages.get responses, format=metadata: https://developers.google.com/gmail/api/reference/rest/v1/users.messages/get . Wrapped in a list here because the real flow is users.messages.list (ids only) then one get per id. Headers are a LIST OF NAME/VALUE PAIRS, not an object, and the casing is not guaranteed -- reading payload.headers['Subject'] is the classic bug. internalDate is epoch MILLISECONDS as a string.",
+  "messages": [
+    {
+      "id": "19923a4f8c2e1b00",
+      "threadId": "19923a4f8c2e1b00",
+      "labelIds": ["UNREAD", "INBOX"],
+      "snippet": "Picture day has been moved to Friday October 3. Order forms are due back the week before. Please send the form with your student...",
+      "internalDate": "1758290400000",
+      "sizeEstimate": 8421,
+      "payload": {
+        "partId": "",
+        "mimeType": "multipart/alternative",
+        "headers": [
+          {"name": "Delivered-To", "value": "family-bot@example.com"},
+          {"name": "From", "value": "Ankeny Christian Academy <office@aca.example.edu>"},
+          {"name": "To", "value": "family-bot@example.com"},
+          {"name": "Subject", "value": "Picture Day moved to October 3"},
+          {"name": "Date", "value": "Fri, 19 Sep 2026 09:00:00 -0500"},
+          {"name": "Message-ID", "value": "<CA+abc123@mail.example.edu>"}
+        ]
+      }
+    },
+    {
+      "id": "19923b60d1f4c211",
+      "threadId": "19923b60d1f4c211",
+      "labelIds": ["UNREAD", "INBOX"],
+      "snippet": "Fall soccer registration closes September 30. Late signups cannot be guaranteed a roster spot...",
+      "internalDate": "1758304800000",
+      "sizeEstimate": 5310,
+      "payload": {
+        "partId": "",
+        "mimeType": "text/html",
+        "headers": [
+          {"name": "From", "value": "Ankeny Parks <rec@ankeny.example.gov>"},
+          {"name": "to", "value": "family-bot@example.com"},
+          {"name": "subject", "value": "Fall soccer registration closes Sept 30"},
+          {"name": "Date", "value": "Fri, 19 Sep 2026 13:00:00 -0500"}
+        ]
+      }
+    },
+    {
+      "id": "19923c71e2a5d322",
+      "threadId": "19923a4f8c2e1b00",
+      "labelIds": ["INBOX"],
+      "snippet": "Reminder: this is the third message in the picture day thread. Nothing new here.",
+      "internalDate": "1758308400000",
+      "sizeEstimate": 3120,
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {"name": "From", "value": "Ankeny Christian Academy <office@aca.example.edu>"},
+          {"name": "Subject", "value": "Re: Picture Day moved to October 3"},
+          {"name": "Date", "value": "Fri, 19 Sep 2026 14:00:00 -0500"}
+        ]
+      }
+    }
+  ]
+}

@@ -3,51 +3,102 @@
 # setup-memory.sh — provision the persistent-memory feature end to end.
 #
 # Idempotent: every step is a no-op if already done, so this is the "start over"
-# button. Run it AFTER deploy.sh has brought the stack up. It:
-#   1. creates the server-only memory-data/ dir (git-ignored; holds the markdown
-#      memory files, one fact per file + a MEMORY.md index)
-#   2. builds + starts memory-mcp (loopback 127.0.0.1:9400)
+# button. It:
+#   1. ensures the server-only memory-data/ dir exists (git-ignored; holds the
+#      markdown memory files, one fact per file + a MEMORY.md index)
+#   2. checks memory-mcp is actually running the digest the manifests pin
 #   3. wires Open WebUI: registers the `memory` MCP tool on assistant and
-#      installs the memory_recall inlet filter (auto-recall into the prompt)
+#      installs the memory_recall inlet filter (the read half, and the half that
+#      enforces per-person privacy)
 #
-# Requires: docker (jacob is in the docker group). No sudo needed.
+# ---------------------------------------------------------------------------
+# THIS SCRIPT TARGETS k3s, NOT COMPOSE
+# ---------------------------------------------------------------------------
+# It used to run `docker compose up -d --build memory-mcp` and `docker cp` into
+# an `open-webui` container. Both moved into k3s during the Stage 5/6 cutover
+# and the script was never updated, so it died at "no such service: memory-mcp"
+# the next time anyone needed it -- which was the deploy of the per-person
+# memory change, i.e. exactly when it mattered. Workloads live in
+# ai-home-server-k8s now; this script configures them, it does not create them.
+#
+# Building and rolling the IMAGE is deliberately not done here: that is
+# scripts/build-mcp-images.sh plus a reviewed digest bump in the k8s repo. What
+# this script owns is the Open WebUI database wiring, which is not in git and
+# has no other home.
+#
+# Requires: a kubeconfig jacob can read (no sudo — see the KUBECONFIG note in
+# setup-assist-location.sh for why sudo is wrong in scripts that cron runs).
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")/.."
 
 log() { echo "[setup-memory $(date +%H:%M:%S)] $*"; }
+die() { echo "[setup-memory] ERROR: $*" >&2; exit 1; }
+
+export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/config}
+NS=ai-stack
+
+kubectl version --client >/dev/null 2>&1 || die "kubectl not usable"
 
 # --- 1. memory-data dir ------------------------------------------------------
-# Owned by the invoking user (uid 1000 / jacob); memory-mcp runs as 1000:1000 so
-# the files it writes stay hand-editable, and open-webui bind-mounts it read-only.
+# Still created here for the Compose-era bind mount and for hand-editing; under
+# k3s the live copy is the memory-data PVC, which memory-mcp owns.
 log "ensuring memory-data/ exists..."
 mkdir -p memory-data
 
 # --- 2. memory-mcp -----------------------------------------------------------
-log "building + starting memory-mcp..."
-docker compose up -d --build memory-mcp
-# open-webui gets the read-only mount only once the compose file adds it; make
-# sure it is running with the current definition.
-docker compose up -d open-webui
+log "checking memory-mcp..."
+kubectl -n "$NS" rollout status deploy/memory-mcp --timeout=120s >/dev/null \
+  || die "memory-mcp is not rolled out; check the k8s repo digest"
+RUNNING=$(kubectl -n "$NS" get pod -l app=memory-mcp \
+  -o jsonpath='{.items[0].status.containerStatuses[0].imageID}')
+log "memory-mcp running ${RUNNING##*@}"
+
+# A merged source change does nothing until the image is rebuilt AND the digest
+# bumped in the k8s repo. Say so loudly rather than "wiring" a stale image and
+# reporting success -- that gap has bitten this repo twice.
+WANT=$(kubectl -n "$NS" get deploy memory-mcp \
+  -o jsonpath='{.spec.template.spec.containers[0].image}')
+case "$RUNNING" in
+  *"${WANT##*@}") : ;;
+  *) die "running digest != manifest digest; run scripts/build-mcp-images.sh --check" ;;
+esac
 
 # --- 3. Open WebUI wiring ----------------------------------------------------
 # Prompt text is server-only (git-ignored prompts/ dir; this repo is public).
 # Fail early and clearly rather than installing a prompt-less assistant.
 for p in prompts/memory-system.txt prompts/memory-recall-header.txt; do
-  [ -s "$p" ] || { echo "FATAL: missing $p -- see prompts/README.md" >&2; exit 1; }
+  [ -s "$p" ] || die "missing $p -- see prompts/README.md"
 done
 
-log "wiring Open WebUI (memory tool on assistant + recall filter)..."
+POD=$(kubectl -n "$NS" get pod -l app=open-webui \
+  -o jsonpath='{.items[0].metadata.name}')
+[ -n "$POD" ] || die "no open-webui pod"
+
+log "wiring Open WebUI (memory tool on assistant + recall filter) in $POD..."
+
+push() { kubectl -n "$NS" cp "$1" "$POD:$2"; }
+run()  { kubectl -n "$NS" exec "$POD" -- python3 "$@"; }
+
 # The `assistant` model row must exist before we wire tools onto it. Idempotent,
 # so it is safe here even though the other setup script does the same.
-docker cp scripts/openwebui-assistant-model.py open-webui:/tmp/openwebui-assistant-model.py >/dev/null
-docker exec open-webui python3 /tmp/openwebui-assistant-model.py
-docker cp prompts/memory-system.txt open-webui:/tmp/memory-system.txt
-docker cp scripts/openwebui-memory.py open-webui:/tmp/openwebui-memory.py
-docker exec open-webui python3 /tmp/openwebui-memory.py
-docker cp scripts/openwebui-install-filter.py open-webui:/tmp/openwebui-install-filter.py
-docker cp scripts/memory_recall.py open-webui:/tmp/memory_recall.py
-docker cp prompts/memory-recall-header.txt open-webui:/tmp/memory-recall-header.txt
-docker exec open-webui python3 /tmp/openwebui-install-filter.py memory_recall "Memory Recall" /tmp/memory_recall.py "Injects the AI's persistent memories into the system prompt at the start of each turn (read half of the memory loop; memory-mcp is the write half)." --models assistant --prompt-file RECALL_HEADER=/tmp/memory-recall-header.txt
-docker restart open-webui >/dev/null
+push scripts/openwebui-assistant-model.py /tmp/openwebui-assistant-model.py
+run /tmp/openwebui-assistant-model.py
+
+push prompts/memory-system.txt /tmp/memory-system.txt
+push scripts/openwebui-memory.py /tmp/openwebui-memory.py
+run /tmp/openwebui-memory.py
+
+push scripts/openwebui-install-filter.py /tmp/openwebui-install-filter.py
+push scripts/memory_recall.py /tmp/memory_recall.py
+push prompts/memory-recall-header.txt /tmp/memory-recall-header.txt
+run /tmp/openwebui-install-filter.py memory_recall "Memory Recall" \
+  /tmp/memory_recall.py \
+  "Injects the AI's persistent memories into the system prompt at the start of each turn (read half of the memory loop; memory-mcp is the write half)." \
+  --models assistant --prompt-file RECALL_HEADER=/tmp/memory-recall-header.txt
+
+# Open WebUI loads filter code at startup, so the DB row alone changes nothing.
+log "restarting open-webui to load the filter..."
+kubectl -n "$NS" rollout restart deploy/open-webui >/dev/null
+kubectl -n "$NS" rollout status deploy/open-webui --timeout=180s >/dev/null
 
 log "done. Verify with: scripts/verify-services.sh"
