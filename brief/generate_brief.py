@@ -14,23 +14,38 @@ below are the part with the bugs in it, and they are identical either way --
 so they are written and tested now, against the REAL published response shapes
 rather than invented ones. When credentials land, only the fetch changes.
 
-WHAT GOES ON A KITCHEN WALL
----------------------------
-The panel is read by anyone standing in the kitchen, guests included. Two
-rules follow, and they are enforced here rather than trusted to a prompt:
+READING MAIL, AND WHAT REACHES THE WALL
+---------------------------------------
+These are two different questions and conflating them produces a useless
+assistant.
 
-  * Forwarded mail is SUMMARISED to sender + subject + date, never quoted. A
-    school email may carry another family's details in a reply chain.
-  * Only `household` memories may reach it. This script never reads the memory
-    directory at all, which is the simplest possible way to hold that line.
+WHAT THE AI READS: the whole body. "Picture day moved to October 3" is in the
+body -- so are the date it moved FROM, the form deadline and the retake date.
+A subject line cannot produce a to-do. Forwarding a message IS the permission
+to read it; anything that should not be read simply is not forwarded. That is
+the entire sharing model, and it is the same rule on both doors.
+
+WHAT REACHES THE WALL: the distilled fact, not a paste of the email. That is a
+display decision -- the panel is read from across a room and has space for
+three lines -- not a restriction on what the AI may see. The panel renders
+`headline`, `lines` and `todos`; the body travels in `mail` for the extraction
+step and is never rendered.
+
+The one hard rule that IS enforced here: only `household` memories may reach
+the panel. This script never opens the memory directory at all, which is the
+simplest possible way to hold that line.
 
 Usage:
   ./generate_brief.py --demo                       # fixtures -> stdout
   ./generate_brief.py --events f.json --mail m.json --todos t.json -o brief.json
 """
 import argparse
+import base64
+import binascii
+import html as html_mod
 import json
 import os
+import re
 import sys
 from datetime import date, datetime, timedelta
 
@@ -125,32 +140,112 @@ def _sender_name(from_header: str) -> str:
     return from_header
 
 
-def mail_summaries(mail: dict, unread_only: bool = True) -> list[dict]:
-    """Sender + subject + date. NEVER the body or the snippet.
+def _decode(data: str) -> str:
+    """Gmail bodies are base64URL (-_ rather than +/) and UNPADDED."""
+    if not data:
+        return ""
+    pad = "=" * (-len(data) % 4)
+    try:
+        return base64.urlsafe_b64decode(data + pad).decode("utf-8", "replace")
+    except (ValueError, binascii.Error):
+        return ""
 
-    A forwarded school email can carry a reply chain with other families'
-    names and numbers in it. Summarising to three fields is what makes it safe
-    to put on a wall that guests can read, and the snippet field is exactly the
-    thing that would leak, so it is not read here at all.
+
+def _strip_html(html: str) -> str:
+    """Crude but sufficient: these are school newsletters, not documents."""
+    text = re.sub(r"(?is)<(script|style).*?</\1>", " ", html)
+    text = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</tr>", "\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html_mod.unescape(text)
+    text = re.sub(r"[ \t]+", " ", text)
+    return re.sub(r"\n\s*\n\s*\n+", "\n\n", text).strip()
+
+
+def message_body(msg: dict, limit: int = 4000) -> str:
+    """The readable text of a Gmail message.
+
+    Three things make this more than a one-liner, and each is a real trap:
+
+      * The body lives in payload.body.data for a SIMPLE message but in
+        payload.parts[] for a multipart one -- and parts NEST. A
+        multipart/mixed carrying a PDF keeps the actual text one level down
+        inside a multipart/alternative, so this has to recurse.
+      * text/plain is preferred over text/html. Both are usually present and
+        the HTML one is a wall of layout markup.
+      * Attachment parts carry body.attachmentId and NO data. Reading them as
+        text yields nothing useful; a PDF must be fetched separately if it is
+        ever wanted.
+
+    Also note format=metadata returns no body at all -- the client must request
+    format=full or this is empty through no fault of the parsing.
+    """
+    plain, html = [], []
+
+    def walk(part):
+        mime = (part.get("mimeType") or "").lower()
+        body = part.get("body") or {}
+        if part.get("parts"):
+            for sub in part["parts"]:
+                walk(sub)
+            return
+        # An attachment has an id instead of inline data. Skip it.
+        if body.get("attachmentId") and not body.get("data"):
+            return
+        text = _decode(body.get("data", ""))
+        if not text:
+            return
+        if mime == "text/plain":
+            plain.append(text)
+        elif mime == "text/html":
+            html.append(_strip_html(text))
+
+    walk(msg.get("payload") or {})
+    text = "\n".join(plain) if plain else "\n".join(html)
+    text = text.strip()
+    return text[:limit]
+
+
+def mail_summaries(mail: dict, unread_only: bool = True,
+                   with_body: bool = True) -> list[dict]:
+    """Sender, subject, date -- and the body.
+
+    THE BODY IS THE POINT. "Picture day moved to Oct 3" is in the body; the
+    subject line alone cannot produce a to-do. Forwarding a message IS the
+    permission to read it, so if something should not be read, it does not get
+    forwarded. That is the whole sharing model.
+
+    What this does NOT do is put the body on the wall. The panel renders the
+    distilled fact, not a paste of the email -- that is a display decision (a
+    wall is read from across a room), not a restriction on what the AI may see.
 
     One entry per THREAD -- a six-reply chain about one event is one thing
-    happening, not six.
+    happening, not six. Bodies of the later replies are joined in, so a
+    correction sent as a reply is not lost.
     """
-    seen, out = set(), []
+    order, threads = [], {}
     for msg in mail.get("messages", []):
         if unread_only and "UNREAD" not in (msg.get("labelIds") or []):
             continue
         tid = msg.get("threadId") or msg.get("id")
-        if tid in seen:
-            continue
-        seen.add(tid)
-        out.append({
-            "from": _sender_name(_header(msg, "From")),
-            "subject": _header(msg, "Subject"),
-            # internalDate is epoch MILLISECONDS, as a string.
-            "received": datetime.fromtimestamp(
-                int(msg.get("internalDate", "0")) / 1000).date().isoformat(),
-        })
+        if tid not in threads:
+            order.append(tid)
+            threads[tid] = {
+                "from": _sender_name(_header(msg, "From")),
+                "subject": _header(msg, "Subject"),
+                # internalDate is epoch MILLISECONDS, as a string.
+                "received": datetime.fromtimestamp(
+                    int(msg.get("internalDate", "0")) / 1000).date().isoformat(),
+                "body": "",
+            }
+        if with_body:
+            extra = message_body(msg)
+            if extra:
+                cur = threads[tid]["body"]
+                threads[tid]["body"] = f"{cur}\n\n---\n\n{extra}" if cur else extra
+    out = [threads[t] for t in order]
+    if not with_body:
+        for m in out:
+            m.pop("body", None)
     return out
 
 

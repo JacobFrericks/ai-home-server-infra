@@ -56,10 +56,10 @@ jobs:
         run: python3 tests/test_memory_owner.py
 
       - name: Unit tests — brief generator
-        # Also a hard gate. Two of these assert that a forwarded email's body
-        # and snippet never reach brief.json: the fridge panel is read by
-        # anyone standing in the kitchen, and a school mail can carry another
-        # family's details in its reply chain.
+        # Also a hard gate. Mostly these pin the three Gmail MIME traps
+        # (nested parts, base64url, attachment parts) and the Calendar all-day
+        # vs timed split -- shape bugs that would surface as a silently empty
+        # wall panel rather than an error.
         run: python3 tests/test_brief.py
 
       - name: Bandit — warn-only

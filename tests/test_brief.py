@@ -84,17 +84,6 @@ class Mail(unittest.TestCase):
         self.assertEqual(len(out), 2)
         self.assertEqual(len({m["subject"] for m in out}), 2)
 
-    def test_body_and_snippet_never_appear(self):
-        """The wall is public. A forwarded school mail can carry another
-        family's details in its reply chain, and `snippet` is where that would
-        surface -- so nothing derived from it may reach the output."""
-        blob = json.dumps(gen.build(fixture("calendar_events.json"),
-                                    self.mail, fixture("ha_todos.json"), TODAY))
-        for msg in self.mail["messages"]:
-            leak = msg["snippet"][:40]
-            self.assertNotIn(leak, blob, "message snippet leaked into brief.json")
-        self.assertNotIn("Order forms are due back", blob)
-
     def test_sender_display_name_is_used(self):
         froms = [m["from"] for m in gen.mail_summaries(self.mail)]
         self.assertIn("Ankeny Christian Academy", froms)
@@ -103,6 +92,85 @@ class Mail(unittest.TestCase):
     def test_read_mail_is_skipped(self):
         subjects = [m["subject"] for m in gen.mail_summaries(self.mail)]
         self.assertFalse(any(s.startswith("Re:") for s in subjects))
+
+    # --- the body is the point ---------------------------------------------
+
+    def test_body_is_read(self):
+        """The detail that makes a to-do lives in the body, never the subject.
+        "moved to October 3" is not derivable from "Picture Day moved to
+        October 3" alone -- the OLD date, the form deadline and the retake date
+        are all body-only."""
+        m = next(m for m in gen.mail_summaries(self.mail)
+                 if "Picture Day" in m["subject"])
+        self.assertIn("October 3", m["body"])
+        self.assertIn("September 26", m["body"])     # the date it moved FROM
+        self.assertIn("Order forms", m["body"])
+        self.assertIn("November 14", m["body"])      # retakes
+
+    def test_plain_text_preferred_over_html(self):
+        """Both parts are usually present; the HTML one is layout markup."""
+        body = gen.message_body(self.mail["messages"][0])
+        self.assertIn("Dear Families", body)
+        self.assertNotIn("<b>", body)
+        self.assertNotIn("<html>", body)
+
+    def test_nested_multipart_is_walked(self):
+        """multipart/mixed with a PDF keeps the real text one level down,
+        inside a multipart/alternative. Not recursing loses the whole body."""
+        body = gen.message_body(self.mail["messages"][1])
+        self.assertIn("registration closes September 30", body)
+        self.assertIn("$85 per player", body)
+
+    def test_attachment_parts_are_skipped(self):
+        """An attachment carries attachmentId and no inline data."""
+        body = gen.message_body(self.mail["messages"][1])
+        self.assertNotIn("soccer-flyer.pdf", body)
+        self.assertNotIn("ANGjdJ_attach", body)
+
+    def test_simple_message_body_on_payload(self):
+        """No parts at all -- data sits directly on payload.body."""
+        body = gen.message_body(self.mail["messages"][2])
+        self.assertIn("No action needed", body)
+
+    def test_base64url_alphabet(self):
+        """Gmail uses -_ rather than +/, and drops the padding."""
+        import base64
+        raw = "Picture day ~ 3 + 4 / 5 ? yes"
+        data = base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+        msg = {"payload": {"mimeType": "text/plain", "body": {"data": data}}}
+        self.assertEqual(gen.message_body(msg), raw)
+
+    def test_metadata_format_yields_empty_not_a_crash(self):
+        """format=metadata returns headers and no body. That is a client
+        misconfiguration, not a parse error -- it must not raise."""
+        msg = {"payload": {"mimeType": "multipart/alternative",
+                           "headers": [{"name": "Subject", "value": "x"}]}}
+        self.assertEqual(gen.message_body(msg), "")
+
+    def test_html_only_message_falls_back_to_stripped_html(self):
+        import base64
+        html = "<p>Practice is <b>cancelled</b> tonight.</p>"
+        data = base64.urlsafe_b64encode(html.encode()).decode().rstrip("=")
+        msg = {"payload": {"mimeType": "text/html", "body": {"data": data}}}
+        body = gen.message_body(msg)
+        self.assertIn("cancelled", body)
+        self.assertNotIn("<b>", body)
+
+    def test_thread_replies_are_joined_not_dropped(self):
+        """A correction sent as a reply must not be lost to thread dedup."""
+        mail = {"messages": [
+            dict(self.mail["messages"][0], labelIds=["UNREAD"]),
+            dict(self.mail["messages"][2], threadId=self.mail["messages"][0]["threadId"],
+                 labelIds=["UNREAD"]),
+        ]}
+        out = gen.mail_summaries(mail)
+        self.assertEqual(len(out), 1)
+        self.assertIn("Dear Families", out[0]["body"])
+        self.assertIn("No action needed", out[0]["body"])
+
+    def test_with_body_false_omits_it(self):
+        out = gen.mail_summaries(self.mail, with_body=False)
+        self.assertTrue(all("body" not in m for m in out))
 
 
 class Todos(unittest.TestCase):
@@ -165,6 +233,16 @@ class Panel(unittest.TestCase):
             self.assertTrue({"owner", "name", "items"} <= set(col))
             for item in col["items"]:
                 self.assertEqual(set(item), {"text", "due"})
+
+    def test_wall_renders_distilled_facts_not_pasted_email(self):
+        """The AI reads the whole body -- forwarding is the permission. But the
+        panel shows the distilled fact, because it is read from across a room.
+        Body text must not end up in headline/lines, which are what render."""
+        rendered = self.doc["headline"] + " " + " ".join(
+            l["text"] for l in self.doc["lines"])
+        self.assertNotIn("Dear Families", rendered)
+        self.assertNotIn("$85 per player", rendered)
+        self.assertLess(len(self.doc["headline"]), 120)
 
     def test_owner_keys_match_the_wall_colour_keys(self):
         allowed = {"jacob", "cassie", "family"}
