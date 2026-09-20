@@ -80,7 +80,74 @@ def _addresses(value: str) -> list[str]:
             re.findall(r"[\w.+-]+@[\w-]+\.[\w.-]+", value or "")]
 
 
-def sender_allowed(msg_headers: dict, trusted: list[str]) -> tuple:
+# Google writes this itself at delivery, after receiving the message. A sender
+# has no control over it, which is exactly what makes it worth reading.
+AUTHSERV = "mx.google.com"
+
+
+def _auth_results(raw_headers: list, authserv: str = AUTHSERV) -> str:
+    """The Authentication-Results line OUR mail server wrote.
+
+    A hostile message can carry its own forged Authentication-Results header,
+    so the authserv-id is checked: only the line stamped by the server that
+    actually received the mail counts. Taking "the first one" would be a real
+    bug the day someone bothers to try it.
+    """
+    for h in raw_headers or []:
+        if (h.get("name") or "").lower() != "authentication-results":
+            continue
+        val = h.get("value") or ""
+        if val.strip().lower().startswith(authserv):
+            return val
+    return ""
+
+
+def _domain(addr: str) -> str:
+    return addr.rsplit("@", 1)[-1].lower() if "@" in addr else ""
+
+
+def authenticated_as(raw_headers: list, address: str) -> tuple:
+    """(ok, why) — did our mail server verify this came from `address`'s domain?
+
+    ALIGNMENT IS THE WHOLE POINT. `dkim=pass` on its own means "some domain
+    signed this and the signature checks out" -- an attacker sending from
+    evil.com with a perfectly valid evil.com key gets `dkim=pass` too. What
+    matters is whether the domain that SIGNED it is the domain the message
+    claims to be FROM. Checking the pass without the alignment is the classic
+    way to build a check that feels strong and stops nothing.
+
+    SPF is accepted as an alternative because it authenticates the envelope
+    sender, which is what matters for a direct send. Either is sufficient;
+    DMARC is precisely "at least one of these, aligned".
+    """
+    want = _domain(address)
+    if not want:
+        return False, "no domain in address"
+    ar = _auth_results(raw_headers)
+    if not ar:
+        return False, f"no Authentication-Results from {AUTHSERV}"
+    flat = re.sub(r"\s+", " ", ar)
+
+    # dkim=pass ... header.i=@domain  (or header.d=domain)
+    for m in re.finditer(r"dkim=pass([^;]*)", flat, re.I):
+        tail = m.group(1)
+        signed = re.search(r"header\.(?:i=@?|d=)([\w.-]+)", tail, re.I)
+        if signed and signed.group(1).lower() == want:
+            return True, f"dkim=pass aligned to {want}"
+
+    # spf=pass (... domain of user@domain designates ...)
+    for m in re.finditer(r"spf=pass([^;]*)", flat, re.I):
+        if re.search(r"domain of [\w.+-]+@" + re.escape(want) + r"\b", m.group(1), re.I):
+            return True, f"spf=pass aligned to {want}"
+
+    if re.search(r"\barc=pass\b", flat, re.I):
+        return True, "arc=pass (forwarded; original signature expected to break)"
+
+    return False, f"no aligned dkim/spf for {want}"
+
+
+def sender_allowed(msg_headers: dict, trusted: list[str],
+                   raw_headers: list = None, require_auth: bool = False) -> tuple:
     """(allowed, reason). Empty `trusted` allows everything, loudly.
 
     WHY THIS EXISTS: the bot has a public email address, so without it anyone
@@ -95,31 +162,41 @@ def sender_allowed(msg_headers: dict, trusted: list[str]) -> tuple:
     auto-forwarded mail keeps the ORIGINAL sender in From, so a From-only
     check would reject exactly the mail the filters exist to deliver.
 
-    Worth being honest about the strength: `From` is trivially forgeable in
-    general. It is meaningful here only because both addresses are gmail.com
-    and Google enforces DMARC on its own domain, so a forged gmail.com sender
-    does not reach this inbox in the first place. The allowlist raises the
-    floor; it is not a cryptographic check.
+    With `require_auth` (the default), the allowlist is only the first gate:
+    the address must ALSO be one the receiving mail server cryptographically
+    verified, via aligned DKIM or SPF. The allowlist says who a message claims
+    to be from; authenticated_as says whether that claim was checked by
+    someone the sender cannot influence.
     """
     if not trusted:
         return True, "no allowlist configured (everything accepted)"
     allow = {t.lower() for t in trusted}
 
-    frm = _addresses(msg_headers.get("From", ""))
-    if any(a in allow for a in frm):
-        return True, "From"
+    def _auth(addr, via):
+        """Second gate: the allowlist says WHO, this says PROVE IT."""
+        if not require_auth:
+            return True, via
+        ok, why = authenticated_as(raw_headers or [], addr)
+        return (True, f"{via} + {why}") if ok else (False, f"{via} but {why}")
+
+    for a in _addresses(msg_headers.get("From", "")):
+        if a in allow:
+            return _auth(a, "From")
 
     # Envelope sender: set by the receiving server, not asserted by the client.
-    rp = _addresses(msg_headers.get("Return-Path", ""))
-    if any(a in allow for a in rp):
-        return True, "Return-Path"
+    for a in _addresses(msg_headers.get("Return-Path", "")):
+        if a in allow:
+            return _auth(a, "Return-Path")
 
-    # Gmail filter auto-forwarding keeps the original From and records the
-    # forwarding chain here instead.
-    fwd = _addresses(msg_headers.get("X-Forwarded-For", ""))
-    if any(a in allow for a in fwd):
-        return True, "X-Forwarded-For"
+    # Gmail filter auto-forwarding keeps the ORIGINAL sender in From and
+    # records the chain here. Forwarding routinely BREAKS the original DKIM
+    # signature -- that is normal and is why ARC exists -- so the alignment
+    # check is against the forwarding account, not the original sender.
+    for a in _addresses(msg_headers.get("X-Forwarded-For", "")):
+        if a in allow:
+            return _auth(a, "X-Forwarded-For")
 
+    frm = _addresses(msg_headers.get("From", ""))
     return False, f"sender not trusted ({', '.join(frm) or 'unknown'})"
 
 
@@ -133,6 +210,7 @@ DEFAULT_HOUSEHOLD = {
     # Empty means "accept anything", which is the old behaviour. A real
     # deployment fills this in; see household.example.json.
     "trusted_senders": [],
+    "require_authentication": True,
     "children": [
         {"name": "Child A", "anchor_grade": 2, "anchor_school_year": 2026},
         {"name": "Child B", "anchor_grade": -1, "anchor_school_year": 2026},
@@ -513,13 +591,20 @@ def main(argv=None) -> int:
     # header check per run, and it means adding a sender to the allowlist
     # later picks up what was already refused instead of losing it.
     trusted = household.get("trusted_senders", [])
+    # Default ON. Being allowlisted says who a message CLAIMS to be from;
+    # this says the receiving server verified it. Off is a deliberate choice.
+    require_auth = household.get("require_authentication", True)
     if not trusted:
         print("WARNING: no trusted_senders configured -- accepting any sender",
               file=sys.stderr)
+    elif not require_auth:
+        print("WARNING: require_authentication is off -- From headers are "
+              "taken at face value", file=sys.stderr)
     allowed_raw, refused = [], []
     for m in mail["messages"]:
-        hdrs = {h["name"]: h["value"] for h in (m.get("payload") or {}).get("headers", [])}
-        ok, why = sender_allowed(hdrs, trusted)
+        raw = (m.get("payload") or {}).get("headers", [])
+        hdrs = {h["name"]: h["value"] for h in raw}
+        ok, why = sender_allowed(hdrs, trusted, raw, require_auth)
         (allowed_raw if ok else refused).append((m, why))
     for m, why in refused:
         print(f"  refused: {gen._header(m, 'Subject')[:44]!r} ({why})",

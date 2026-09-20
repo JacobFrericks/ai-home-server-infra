@@ -1,9 +1,10 @@
 {
-  "_comment": "Copy to brief/household.json (git-ignored) and fill in real values. trusted_senders IS THE SECURITY BOUNDARY: the bot's address is public, so without it anyone who learns it can put a line on the kitchen wall and have the model read their text. Checked against From, Return-Path and X-Forwarded-For -- the last one so Gmail FILTER forwarding, which keeps the original sender in From, still works. Empty means accept anything. GRADES ARE ANCHORS, not literals: stored with the school year they were true in and computed forward, so they roll over every August by themselves. 0 is kindergarten, negative numbers are the years before it. grade_labels is keyed BY GRADE NUMBER, not by child, so a child moves out of a label rather than wearing it forever.",
+  "_comment": "Copy to brief/household.json (git-ignored) and fill in real values. trusted_senders IS THE SECURITY BOUNDARY: the bot's address is public, so without it anyone who learns it can put a line on the kitchen wall and have the model read their text. Checked against From, Return-Path and X-Forwarded-For -- the last one so Gmail FILTER forwarding, which keeps the original sender in From, still works. Empty means accept anything. require_authentication (default true) adds a SECOND gate: the address must also be one the receiving mail server cryptographically verified, via DKIM or SPF ALIGNED to that domain. Alignment is the part that matters -- an attacker can sign their own mail perfectly and get dkim=pass for THEIR domain. arc=pass is accepted for forwarded mail, whose original signature normally breaks in transit. GRADES ARE ANCHORS, not literals: stored with the school year they were true in and computed forward, so they roll over every August by themselves. 0 is kindergarten, negative numbers are the years before it. grade_labels is keyed BY GRADE NUMBER, not by child, so a child moves out of a label rather than wearing it forever.",
   "trusted_senders": [
     "parent-a@example.com",
     "parent-b@example.com"
   ],
+  "require_authentication": true,
   "children": [
     {
       "name": "Child A",
