@@ -56,6 +56,12 @@ from datetime import date, datetime, timedelta
 MAX_LINES = 3
 MAX_ITEMS = 4
 
+# Anything overdue by more than this is not a live commitment -- it is a thing
+# somebody forgot in 2013. Without the rule it sorts FIRST (soonest due) and
+# permanently occupies the top slot on the kitchen wall, pushing today's real
+# items down or off. Found in real data, not imagined.
+MAX_OVERDUE_DAYS = 14
+
 # WHO LIVES HERE IS NOT IN THIS REPO.
 # ------------------------------------
 # This repo is PUBLIC. Household member names -- and the Home Assistant entity
@@ -66,22 +72,24 @@ MAX_ITEMS = 4
 # Owner keys must match the calendar feed colours in the MagicMirror config and
 # the `owner` values in memory-mcp: one vocabulary across the whole wall.
 #
-# Format (brief/lists.json, git-ignored):
-#   {"lists": [{"entity": "todo.<name>", "owner": "<key>", "name": "<label>",
-#               "auto": false, "panel": true}, ...]}
+# Format (brief/lists.json, git-ignored). Two sources:
+#   Home Assistant  {"source":"ha","entity":"todo.<name>", ...}
+#   Google Tasks    {"source":"google_tasks","account":"<key>","list":"My Tasks", ...}
+# Common keys: owner, name, auto (bot-written), panel (show on the wall),
+# and optional max_overdue_days to override the staleness cutoff.
 LISTS_FILE = os.environ.get(
     "BRIEF_LISTS", os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "lists.json"))
 
 DEFAULT_LISTS = [
-    {"entity": "todo.adult_a", "owner": "adult-a", "name": "Adult A",
-     "auto": False, "panel": True},
-    {"entity": "todo.adult_b", "owner": "adult-b", "name": "Adult B",
-     "auto": False, "panel": True},
-    {"entity": "todo.family_auto", "owner": "family", "name": "Suggested",
-     "auto": True, "panel": True},
-    {"entity": "todo.shopping_list", "owner": "family", "name": "Shopping",
-     "auto": False, "panel": False},
+    # A personal list read from Google Tasks, READ-ONLY by credential.
+    {"source": "google_tasks", "account": "adult-a", "list": "My Tasks",
+     "owner": "adult-a", "name": "Adult A", "auto": False, "panel": True},
+    # The bot's own list, in Home Assistant. The ONLY list it may write.
+    {"source": "ha", "entity": "todo.family_auto", "owner": "family",
+     "name": "Suggested", "auto": True, "panel": True},
+    {"source": "ha", "entity": "todo.shopping_list", "owner": "family",
+     "name": "Shopping", "auto": False, "panel": False},
 ]
 
 
@@ -196,6 +204,51 @@ def _strip_html(html: str) -> str:
     return re.sub(r"\n\s*\n\s*\n+", "\n\n", text).strip()
 
 
+# Everything below the first line matching one of these is boilerplate. Real
+# newsletters put the useful sentence at the top and the legal furniture at the
+# bottom, so cutting at the first hit loses nothing and removes a lot.
+_FOOTER_RE = re.compile(
+    r"(?im)^\s*(unsubscribe|manage preferences|privacy policy|"
+    r"sent with love from|you are receiving this|"
+    r"view this email in your browser|--\s*$)")
+
+# Tracking URLs in a forwarded newsletter run to hundreds of characters of
+# opaque token, which is pure noise to a model and crowds out real content.
+_URL_RE = re.compile(r"<?https?://[^\s>]+>?")
+_IMG_RE = re.compile(r"(?im)^\s*\[image:[^\]]*\]\s*$")
+
+
+def clean_body(text: str, keep_short_urls: bool = True) -> str:
+    """Strip the furniture from a newsletter so the useful sentence survives.
+
+    Measured on a real forwarded school newsletter: 1651 characters in, and the
+    single fact that mattered ("Picture Day is coming up on September 24")
+    was one line of it. The rest was tracking URLs, an unsubscribe block, a
+    street address and image placeholders. Feeding all of that to the model
+    wastes context and hands it more ways to latch onto the wrong thing.
+
+    Deliberately conservative: it cuts known boilerplate, never guesses at
+    prose. A short bare link is kept because it is occasionally the content
+    (a meeting link, a form).
+    """
+    if not text:
+        return ""
+    cut = _FOOTER_RE.search(text)
+    if cut:
+        text = text[:cut.start()]
+    text = _IMG_RE.sub("", text)
+
+    def _url(m):
+        u = m.group(0).strip("<>")
+        return u if keep_short_urls and len(u) <= 60 else ""
+
+    text = _URL_RE.sub(_url, text)
+    # Collapse the whitespace the removals leave behind.
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return "\n".join(l.rstrip() for l in text.splitlines()).strip()
+
+
 def message_body(msg: dict, limit: int = 4000) -> str:
     """The readable text of a Gmail message.
 
@@ -236,8 +289,7 @@ def message_body(msg: dict, limit: int = 4000) -> str:
 
     walk(msg.get("payload") or {})
     text = "\n".join(plain) if plain else "\n".join(html)
-    text = text.strip()
-    return text[:limit]
+    return clean_body(text)[:limit]
 
 
 def mail_summaries(mail: dict, unread_only: bool = True,
@@ -294,6 +346,26 @@ def _due_key(item: dict):
     return (0, due)
 
 
+def _is_stale(due: str | None, today: date, max_days: int = MAX_OVERDUE_DAYS) -> bool:
+    """True for something overdue past the point of being a real commitment."""
+    if not due:
+        return False            # no date means no deadline to have missed
+    try:
+        d = date.fromisoformat(due[:10])
+    except ValueError:
+        return False
+    return (today - d).days > max_days
+
+
+def _open_items(items: list[dict], today: date, max_days: int) -> list[dict]:
+    """Not completed, not ancient, soonest-due first."""
+    live = [i for i in items
+            if i.get("status") != "completed"
+            and not _is_stale(i.get("due"), today, max_days)]
+    live.sort(key=_due_key)
+    return live
+
+
 def _due_label(due: str | None, today: date) -> str:
     if not due:
         return ""
@@ -308,19 +380,52 @@ def _due_label(due: str | None, today: date) -> str:
     return d.strftime("%b ") + str(d.day)
 
 
+def google_tasks_items(tasks_doc: dict, list_title: str) -> list[dict]:
+    """Normalise a Google Tasks list into the same shape as an HA to-do list.
+
+    Two Google-specific details:
+      * `due` is RFC3339 with a time, but Google Tasks has NO due TIME -- it is
+        always 00:00:00Z and meaningless. Only the date part is used, and
+        treating it as a real timestamp would shift dates across time zones.
+      * Completed tasks are absent unless showCompleted=true, but a stored
+        fixture or a cached response may still carry them, so status is
+        checked regardless.
+    """
+    lists = (tasks_doc.get("tasklists") or {}).get("items", [])
+    match = next((L for L in lists if L.get("title") == list_title), None)
+    if not match:
+        return []
+    raw = ((tasks_doc.get("tasks") or {}).get(match["id"]) or {}).get("items", [])
+    out = []
+    for t in raw:
+        due = t.get("due")
+        out.append({
+            "summary": t.get("title", ""),
+            "status": t.get("status", "needsAction"),
+            "due": due[:10] if due else None,
+        })
+    return out
+
+
 def todo_columns(todos: dict, today: date, lists: list[dict] = None) -> list[dict]:
     """The panel's columns, open items only, soonest-due first."""
-    resp = todos.get("service_response", todos)
     cols = []
     for spec in (lists if lists is not None else load_lists()):
         if not spec.get("panel", True):
             continue
         owner, name, auto = spec["owner"], spec["name"], spec.get("auto", False)
-        raw = (resp.get(spec["entity"]) or {}).get("items", [])
-        # `completed` items stay in the response. A wall full of finished tasks
-        # is noise, and worse, it hides the open ones below the cut.
-        items = [i for i in raw if i.get("status") != "completed"]
-        items.sort(key=_due_key)
+        src = spec.get("source", "ha")
+        max_days = spec.get("max_overdue_days", MAX_OVERDUE_DAYS)
+
+        if src == "google_tasks":
+            doc = (todos.get("google_tasks") or {}).get(spec.get("account", ""), {})
+            raw = google_tasks_items(doc, spec["list"])
+        else:
+            # Home Assistant: todo.get_items nests under service_response.
+            resp = todos.get("service_response", todos)
+            raw = (resp.get(spec["entity"]) or {}).get("items", [])
+
+        items = _open_items(raw, today, max_days)
         cols.append({
             "owner": owner, "name": name, "auto": auto,
             "items": [{"text": i.get("summary", ""),

@@ -168,6 +168,51 @@ class Mail(unittest.TestCase):
         self.assertIn("Dear Families", out[0]["body"])
         self.assertIn("No action needed", out[0]["body"])
 
+    # --- noise removal -----------------------------------------------------
+
+    def test_footer_boilerplate_is_cut(self):
+        """Measured on a real forwarded newsletter: 1651 chars in, one useful
+        sentence. The rest was tracking URLs, unsubscribe blocks and an
+        address -- context spent on nothing, plus more ways to mislead."""
+        raw = ("Picture Day is coming up on September 24, 2026.\n"
+               "Cheers,\n\nUnsubscribe\n<https://x.example/token>\n"
+               "  |  Manage Preferences\n  |  Privacy Policy\n"
+               "735 Tehama Street, San Francisco CA 94103")
+        out = gen.clean_body(raw)
+        self.assertIn("September 24, 2026", out)
+        self.assertNotIn("Unsubscribe", out)
+        self.assertNotIn("Tehama", out)
+
+    def test_long_tracking_urls_are_dropped(self):
+        long_url = "https://x.example/p?ctt=" + "A" * 300
+        out = gen.clean_body(f"Event is Friday.\n<{long_url}>\nCheers,")
+        self.assertIn("Event is Friday.", out)
+        self.assertNotIn("ctt=", out)
+
+    def test_short_links_are_kept(self):
+        """A short bare link is sometimes the content -- a form, a meeting."""
+        out = gen.clean_body("Sign up: https://ex.co/form1")
+        self.assertIn("https://ex.co/form1", out)
+
+    def test_image_placeholders_go(self):
+        out = gen.clean_body("[image: Logo]\nPractice at 5.\n[image: Footer]")
+        self.assertNotIn("[image:", out)
+        self.assertIn("Practice at 5.", out)
+
+    def test_forward_header_survives(self):
+        """Manual forwards put the REAL sender in the body -- the From header
+        just says whoever forwarded it. Losing this loses who it came from."""
+        raw = ("---------- Forwarded message ---------\n"
+               "From: School <office@school.example.edu>\n"
+               "Subject: Picture Day\n\nIt moved to Oct 3.\nUnsubscribe\n")
+        out = gen.clean_body(raw)
+        self.assertIn("office@school.example.edu", out)
+        self.assertIn("Oct 3", out)
+
+    def test_cleaning_never_empties_real_content(self):
+        for raw in ("Practice cancelled tonight.", "A\n\nB", "  spaced  "):
+            self.assertTrue(gen.clean_body(raw).strip(), f"emptied: {raw!r}")
+
     def test_with_body_false_omits_it(self):
         out = gen.mail_summaries(self.mail, with_body=False)
         self.assertTrue(all("body" not in m for m in out))
@@ -176,7 +221,18 @@ class Mail(unittest.TestCase):
 class Todos(unittest.TestCase):
     def setUp(self):
         self.todos = fixture("ha_todos.json")
-        self.cols = gen.todo_columns(self.todos, TODAY)
+        # Explicit HA specs: the shipped defaults now read the personal list
+        # from Google Tasks, so they no longer describe this fixture.
+        self.cols = gen.todo_columns(self.todos, TODAY, [
+            {"source": "ha", "entity": "todo.adult_a", "owner": "adult-a",
+             "name": "Adult A", "panel": True},
+            {"source": "ha", "entity": "todo.adult_b", "owner": "adult-b",
+             "name": "Adult B", "panel": True},
+            {"source": "ha", "entity": "todo.family_auto", "owner": "family",
+             "name": "Suggested", "auto": True, "panel": True},
+            {"source": "ha", "entity": "todo.shopping_list", "owner": "family",
+             "name": "Shopping", "panel": False},
+        ])
 
     def test_completed_items_are_excluded(self):
         col_a = next(c for c in self.cols if c["owner"] == "adult-a")
@@ -212,13 +268,83 @@ class Todos(unittest.TestCase):
         self.assertNotIn("Shopping", [c["name"] for c in self.cols])
 
 
+class GoogleTasks(unittest.TestCase):
+    """The personal-list source. Read-only by credential, not by politeness."""
+
+    def setUp(self):
+        self.gt = fixture("google_tasks.json")
+        self.spec = [{"source": "google_tasks", "account": "adult-a",
+                      "list": "My Tasks", "owner": "adult-a",
+                      "name": "Mine", "panel": True}]
+        self.col = gen.todo_columns({"google_tasks": {"adult-a": self.gt}},
+                                    TODAY, self.spec)[0]
+
+    def titles(self):
+        return [i["text"] for i in self.col["items"]]
+
+    def test_ancient_overdue_task_is_hidden(self):
+        """The one that forced this rule: a 2013 task sorts SOONEST-DUE and
+        would otherwise sit permanently at the top of the kitchen wall."""
+        self.assertNotIn("Laundry", self.titles())
+
+    def test_recently_overdue_task_is_kept(self):
+        """Overdue by 11 days is still a real commitment -- do not hide it."""
+        self.assertIn("Order a yearbook", self.titles())
+
+    def test_boundary_of_the_staleness_rule(self):
+        f = gen._is_stale
+        self.assertFalse(f("2026-09-06", TODAY))   # exactly 14 days over
+        self.assertTrue(f("2026-09-05", TODAY))    # 15 -> gone
+        self.assertFalse(f(None, TODAY))           # undated is never stale
+        self.assertFalse(f("2026-12-01", TODAY))   # future
+
+    def test_completed_tasks_are_excluded(self):
+        self.assertNotIn("Already done", self.titles())
+
+    def test_due_time_component_is_ignored(self):
+        """Google Tasks has no due TIME -- it is always 00:00:00Z. Treating it
+        as a real timestamp would shift the date across time zones."""
+        items = gen.google_tasks_items(self.gt, "My Tasks")
+        picture = next(i for i in items if i["summary"] == "Picture day")
+        self.assertEqual(picture["due"], "2026-09-23")
+
+    def test_undated_task_survives_and_sorts_last(self):
+        self.assertEqual(self.titles()[-1], "Fix the gate latch")
+
+    def test_unknown_list_title_yields_nothing(self):
+        self.assertEqual(gen.google_tasks_items(self.gt, "Nope"), [])
+
+    def test_empty_list_is_handled(self):
+        self.assertEqual(gen.google_tasks_items(self.gt, "Chores"), [])
+
+
 class Panel(unittest.TestCase):
     """The output must fit what MMM-FamilyBrief can actually render."""
 
     def setUp(self):
+        todos = dict(fixture("ha_todos.json"))
+        todos["google_tasks"] = {"adult-a": fixture("google_tasks.json")}
+        self.lists = [
+            {"source": "google_tasks", "account": "adult-a", "list": "My Tasks",
+             "owner": "adult-a", "name": "Mine", "panel": True},
+            {"source": "ha", "entity": "todo.family_auto", "owner": "family",
+             "name": "Suggested", "auto": True, "panel": True},
+        ]
         self.doc = gen.build(fixture("calendar_events.json"),
                              fixture("gmail_messages.json"),
-                             fixture("ha_todos.json"), TODAY)
+                             todos, TODAY, self.lists)
+
+    def test_both_sources_appear_side_by_side(self):
+        """One Google Tasks column and one Home Assistant column, together."""
+        self.assertEqual([c["name"] for c in self.doc["todos"]],
+                         ["Mine", "Suggested"])
+        self.assertTrue(all(c["items"] or c["total"] == 0
+                            for c in self.doc["todos"]))
+
+    def test_only_the_bot_list_is_flagged_auto(self):
+        """The 'auto' badge is what tells a person a machine wrote it."""
+        auto = [c["name"] for c in self.doc["todos"] if c["auto"]]
+        self.assertEqual(auto, ["Suggested"])
 
     def test_respects_the_measured_caps(self):
         self.assertLessEqual(len(self.doc["lines"]), gen.MAX_LINES)
@@ -255,6 +381,60 @@ class Panel(unittest.TestCase):
                         {"service_response": {}}, TODAY)
         self.assertTrue(doc["headline"])
         self.assertEqual(doc["lines"], [])
+
+
+class MailCache(unittest.TestCase):
+    """The cache is what lets the 15-minute job avoid IMAP entirely."""
+
+    def setUp(self):
+        import importlib.util, tempfile
+        self.dir = tempfile.mkdtemp()
+        os.environ["MAIL_CACHE"] = os.path.join(self.dir, "cache.json")
+        spec = importlib.util.spec_from_file_location(
+            "fl", os.path.join(ROOT, "brief", "fetch_live.py"))
+        self.fl = importlib.util.module_from_spec(spec)
+        sys.modules["fl"] = self.fl
+        spec.loader.exec_module(self.fl)
+        self.calls = []
+
+    def _stub(self, result=None, boom=False):
+        def fake(env, **kw):
+            self.calls.append(1)
+            if boom:
+                raise OSError("imap down")
+            return result or {"messages": [{"id": "x"}]}
+        self.fl.fetch_mail = fake
+
+    def test_fresh_cache_avoids_imap_entirely(self):
+        """The whole point: 15-minute ticks must not open a Gmail connection."""
+        self._stub()
+        self.fl.cached_mail({}, 3600)
+        self.fl.cached_mail({}, 3600)
+        self.fl.cached_mail({}, 3600)
+        self.assertEqual(len(self.calls), 1, "IMAP hit more than once")
+
+    def test_zero_max_age_forces_a_live_fetch(self):
+        self._stub()
+        self.fl.cached_mail({}, 3600)
+        _, how = self.fl.cached_mail({}, 0)
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(how, "live")
+
+    def test_stale_cache_is_served_when_imap_fails(self):
+        """A slightly old mail list beats an empty one -- the panel cannot tell
+        'no mail' from 'could not reach Gmail', so it must not show empty."""
+        self._stub()
+        self.fl.cached_mail({}, 3600)
+        self._stub(boom=True)
+        payload, how = self.fl.cached_mail({}, 0)
+        self.assertTrue(payload["messages"])
+        self.assertTrue(how.startswith("STALE"))
+
+    def test_no_cache_and_imap_down_raises(self):
+        """Nothing to fall back on is a real error, not a silent empty."""
+        self._stub(boom=True)
+        with self.assertRaises(OSError):
+            self.fl.cached_mail({}, 3600)
 
 
 if __name__ == "__main__":
