@@ -12,7 +12,7 @@ required_open_webui_version: 0.5.0
 
 # WHY THIS EXISTS
 # --------------
-# memory-mcp (127.0.0.1:9400) gives the model tools to SAVE facts as markdown
+# memory-mcp (the memory-mcp Service, :9400) gives the model tools to SAVE facts as markdown
 # files in /memory (a read-only bind mount of the server's memory-data/ dir).
 # This inlet filter is the RECALL half: before each real user turn it reads all
 # those files and prepends a <memory_context> block to the system prompt, so the

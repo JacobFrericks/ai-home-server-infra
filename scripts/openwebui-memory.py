@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Wire the persistent-memory MCP tool into Open WebUI's DB. Idempotent.
 
-Run INSIDE the open-webui container (the DB lives in its volume):
-    docker cp scripts/openwebui-memory.py open-webui:/tmp/
-    docker exec open-webui python3 /tmp/openwebui-memory.py
-    docker restart open-webui
+Run INSIDE the Open WebUI pod (the DB lives in its volume):
+    kubectl -n ai-stack cp scripts/openwebui-memory.py \
+        $(kubectl -n ai-stack get pod -l app=open-webui \
+            -o jsonpath='{.items[0].metadata.name}'):/tmp/
+    kubectl -n ai-stack exec deploy/open-webui -- python3 /tmp/openwebui-memory.py
+    kubectl -n ai-stack rollout restart deploy/open-webui
 
 Does three things, all as in-place upserts that PRESERVE existing config:
-  1. registers the `memory` MCP tool server (streamable-HTTP, 127.0.0.1:9400/mcp)
+  1. registers the `memory` MCP tool server (streamable-HTTP, MCP_URL below)
      in tool_server.connections;
   2. appends `server:mcp:memory` to the assistant model's meta.toolIds
      (keeping searxng-web / home-assistant) and ensures builtin_tools is on;
@@ -15,11 +17,27 @@ Does three things, all as in-place upserts that PRESERVE existing config:
 
 The read half of the loop is the memory_recall inlet filter; see README "Memory".
 Targets the `assistant` model (gemma4:26b-backed); other models are left alone.
+
+ADDRESS, AND WHY IT IS NOT LOOPBACK
+-----------------------------------
+Before the k3s migration both halves shared the host network namespace, so
+`127.0.0.1:9400` was the right address. They are separate pods now and that
+address resolves, inside the Open WebUI pod, to Open WebUI itself -- the symptom
+is a red "Failed to connect to MCP server 'memory'" in the chat.
+
+Step 1 below is deliberately destructive (it drops any existing `memory` entry
+and re-adds a canonical one), so a stale address here silently overwrites a
+correct one. Keep MCP_URL in step with the `memory` entry of MCP_URLS in
+scripts/k8s-repoint-owui.py, which repairs this table after a migration.
 """
 import sqlite3, json, time, sys, os
 
 DB = "/app/backend/data/webui.db"
 CONN_ID = "memory"
+# In-cluster Service DNS: preferred over an IP, which a Service delete/recreate
+# would invalidate. Override for a non-default namespace or a host-network run.
+MCP_URL = os.environ.get(
+    "MEMORY_MCP_URL", "http://memory-mcp.ai-stack.svc.cluster.local:9400/mcp")
 TOOL_ID = "server:mcp:memory"
 MODEL = "assistant"
 
@@ -52,7 +70,7 @@ conns = json.loads(row[0]) if row and row[0] else []
 conns = [x for x in conns if (x.get("info") or {}).get("id") != CONN_ID]
 conns.append({
     "type": "mcp",
-    "url": "http://127.0.0.1:9400/mcp",
+    "url": MCP_URL,
     "auth_type": "none",
     "key": "",
     "config": {"enable": True, "function_name_filter_list": ""},
