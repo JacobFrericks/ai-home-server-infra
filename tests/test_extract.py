@@ -206,6 +206,96 @@ class SenderAllowlist(unittest.TestCase):
         self.assertIn("x@bad.test", why)
 
 
+def ar(value):
+    return [{"name": "Authentication-Results", "value": value}]
+
+
+class Authentication(unittest.TestCase):
+    """The second gate. The allowlist says who a message CLAIMS to be from;
+    this says whether the receiving server verified that claim."""
+
+    TRUSTED = ["parent@gmail.com"]
+    GOOD = ar("mx.google.com; dkim=pass header.i=@gmail.com header.s=x; "
+              "spf=pass (google.com: domain of parent@gmail.com designates "
+              "1.2.3.4 as permitted sender); dmarc=pass")
+
+    def check(self, headers, raw):
+        return ex.sender_allowed(headers, self.TRUSTED, raw, require_auth=True)
+
+    def test_aligned_dkim_accepted(self):
+        ok, why = self.check({"From": "P <parent@gmail.com>"}, self.GOOD)
+        self.assertTrue(ok)
+        self.assertIn("aligned", why)
+
+    def test_valid_signature_for_the_WRONG_domain_is_refused(self):
+        """THE attack this exists to stop. An attacker can sign their own mail
+        perfectly and get dkim=pass -- for THEIR domain. Checking the pass
+        without checking the alignment is a gate that feels strong and stops
+        nothing."""
+        ok, _ = self.check({"From": "P <parent@gmail.com>"},
+                           ar("mx.google.com; dkim=pass header.i=@evil.test "
+                              "header.s=k1; spf=pass (google.com: domain of "
+                              "bot@evil.test designates 9.9.9.9 as permitted sender)"))
+        self.assertFalse(ok)
+
+    def test_sender_injected_results_are_ignored(self):
+        """A message can carry its own Authentication-Results. Only the one
+        stamped by the server that actually received the mail counts."""
+        ok, why = self.check({"From": "P <parent@gmail.com>"},
+                             ar("attacker-controlled; dkim=pass header.i=@gmail.com"))
+        self.assertFalse(ok)
+        self.assertIn("mx.google.com", why)
+
+    def test_forged_header_before_the_real_one(self):
+        """Taking "the first Authentication-Results" would pass this."""
+        raw = (ar("evil.test; dkim=pass header.i=@gmail.com")
+               + ar("mx.google.com; dkim=pass header.i=@evil.test"))
+        self.assertFalse(self.check({"From": "P <parent@gmail.com>"}, raw)[0])
+
+    def test_no_auth_headers_refused(self):
+        self.assertFalse(self.check({"From": "P <parent@gmail.com>"}, [])[0])
+
+    def test_dkim_fail_refused(self):
+        self.assertFalse(self.check(
+            {"From": "P <parent@gmail.com>"},
+            ar("mx.google.com; dkim=fail header.i=@gmail.com; spf=fail"))[0])
+
+    def test_aligned_spf_alone_is_enough(self):
+        """DMARC is 'at least one aligned mechanism'. SPF authenticates the
+        envelope sender, which is what matters for a direct send."""
+        ok, why = self.check({"From": "P <parent@gmail.com>"},
+                             ar("mx.google.com; spf=pass (google.com: domain of "
+                                "parent@gmail.com designates 1.2.3.4 as "
+                                "permitted sender)"))
+        self.assertTrue(ok)
+        self.assertIn("spf", why)
+
+    def test_arc_pass_covers_forwarded_mail(self):
+        """Forwarding routinely BREAKS the original DKIM signature -- that is
+        normal, and is the reason ARC exists. Without this, turning
+        verification on would silently kill auto-forwarded mail."""
+        ok, why = ex.sender_allowed(
+            {"From": "School <office@school.example.edu>",
+             "X-Forwarded-For": "parent@gmail.com bot@example.com"},
+            self.TRUSTED, ar("mx.google.com; dkim=fail; spf=softfail; arc=pass (i=1)"),
+            require_auth=True)
+        self.assertTrue(ok)
+        self.assertIn("arc", why)
+
+    def test_verification_can_be_turned_off(self):
+        """Off is a deliberate choice, and main() warns on every run."""
+        self.assertTrue(ex.sender_allowed(
+            {"From": "P <parent@gmail.com>"}, self.TRUSTED, [], require_auth=False)[0])
+
+    def test_untrusted_sender_still_refused_even_if_authenticated(self):
+        """Being cryptographically genuine is not the same as being welcome."""
+        ok, _ = self.check({"From": "Stranger <someone@gmail.com>"}, self.GOOD)
+        self.assertFalse(ok)
+
+    def test_default_config_requires_authentication(self):
+        self.assertTrue(ex.DEFAULT_HOUSEHOLD["require_authentication"])
+
+
 class Schema(unittest.TestCase):
     def test_applies_to_enum_is_built_from_the_household(self):
         sch = ex._schema(["kid-a", "kid-b"])
