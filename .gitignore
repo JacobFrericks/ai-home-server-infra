@@ -1,5 +1,12 @@
 # Real secrets live only on the server, never in git.
+#
+# The GLOB matters. This was `.env` alone, which does not cover `.env.family`
+# -- the file holding the family assistant's Google refresh token, OAuth client
+# secret, Gmail app password and Home Assistant token. It sat untracked but
+# UNIGNORED, one `git add -A` away from being published to a public repo. It
+# was never committed; this closes the door rather than reporting a fire.
 .env
+.env.*
 monitoring/.env
 
 # Home Assistant long-lived access token for the Prometheus scrape job.
