@@ -234,6 +234,28 @@ class Todos(unittest.TestCase):
              "name": "Shopping", "panel": False},
         ])
 
+    def test_item_descriptions_never_reach_the_wall(self):
+        """The panel shows `summary` and `due`, and nothing else.
+
+        extract.build_note deliberately writes a long description -- the
+        source line plus a verbatim quote -- so the assistant can answer
+        "what is that about?" later. That is only acceptable while the wall
+        cannot render it, so this asserts the boundary rather than trusting
+        it: a secret is planted in every field the panel might pick up.
+        """
+        secret = "SHOULD-NOT-BE-ON-THE-WALL"
+        todos = json.loads(json.dumps(self.todos))
+        resp = todos.get("service_response", todos)
+        for lst in resp.values():
+            for item in lst.get("items", []):
+                item["description"] = secret
+                item["notes"] = secret
+        cols = gen.todo_columns(todos, TODAY, [
+            {"source": "ha", "entity": "todo.family_auto", "owner": "family",
+             "name": "Suggested", "auto": True, "panel": True}])
+        self.assertTrue(cols[0]["items"], "fixture produced no items to check")
+        self.assertNotIn(secret, json.dumps(cols))
+
     def test_completed_items_are_excluded(self):
         col_a = next(c for c in self.cols if c["owner"] == "adult-a")
         self.assertNotIn("Pay the water bill",

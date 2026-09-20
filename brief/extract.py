@@ -483,11 +483,40 @@ def existing_titles(env: dict) -> set:
         return set()
 
 
-def add_todo(env: dict, item: dict, provenance: str) -> None:
+MAX_EVIDENCE = 400
+
+
+def build_note(msg: dict, item: dict) -> str:
+    """The item's `description`: where it came from, and why it is here.
+
+    Titles are deliberately terse ("Attend Parent Meeting"), which is right for
+    a wall four items wide and useless when someone later asks the assistant
+    what the thing actually is. The answer already exists -- `evidence` is the
+    verbatim span verify_items matched against the message body, so it is
+    quoted text, not a second guess at what the mail said.
+
+    This is safe to make long. The fridge panel builds its columns from
+    `summary` and `due` only (generate_brief.todo_columns), so nothing here
+    reaches the wall; it is read back through todo.get_items, which is what
+    both the assistant and a human opening the list see.
+    """
+    lines = [f"From {msg.get('from', '')}, {msg.get('received', '')}"]
+    subject = (msg.get("subject") or "").strip()
+    if subject:
+        lines.append(f"Subject: {subject}")
+    quote = " ".join((item.get("evidence") or "").split())
+    if quote:
+        if len(quote) > MAX_EVIDENCE:
+            quote = quote[:MAX_EVIDENCE].rstrip() + "..."
+        lines += ["", f'"{quote}"']
+    return "\n".join(lines)
+
+
+def add_todo(env: dict, item: dict, note: str) -> None:
     """Add ONE item, to the bot's own list. The entity is not a parameter the
     model can influence -- it is fixed at module scope."""
     payload = {"entity_id": SUGGESTED_ENTITY, "item": item["title"],
-               "description": provenance}
+               "description": note}
     if item.get("due"):
         payload["due_date"] = item["due"]
     ha_call(env, "add_item", payload)
@@ -647,7 +676,7 @@ def main(argv=None) -> int:
             print(f"    KEEP: {it['title']:<46} due={it['due'] or '-'}"
                   f"  [{it['applies_to']}]", file=sys.stderr)
             if not a.dry_run:
-                add_todo(env, it, f"From {m['from']}, {m['received']}")
+                add_todo(env, it, build_note(m, it))
             already.add(_normalise(it["title"]))
             added += 1
         all_kept.extend(kept)
