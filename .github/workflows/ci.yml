@@ -62,6 +62,14 @@ jobs:
         # wall panel rather than an error.
         run: python3 tests/test_brief.py
 
+      - name: Unit tests — extraction and the IDLE watcher
+        # The sender allowlist and DKIM alignment live here, as do the IDLE
+        # protocol constants. A silently relaxed RENEW gives a watcher that
+        # looks alive and never reports anything.
+        run: |
+          python3 tests/test_extract.py
+          python3 tests/test_mail_idle.py
+
       - name: Bandit — warn-only
         # ~8k LOC of glue and MCP servers taking LLM-supplied input (memory-mcp,
         # comfyui-mcp, scripts/, the HA custom_components except the vendored

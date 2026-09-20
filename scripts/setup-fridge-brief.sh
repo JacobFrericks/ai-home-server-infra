@@ -7,11 +7,15 @@
 # ---------------------------------------------------------------------------
 # TWO TIMERS, NOT ONE. DO NOT COLLAPSE THEM.
 # ---------------------------------------------------------------------------
-#   fridge-brief.timer       every 15 min  -- calendar, tasks, HA. Mail comes
-#                                             from a local cache; no IMAP.
-#   fridge-brief-mail.timer  every 60 min  -- the only thing that opens IMAP,
-#                                             and the only thing that runs the
-#                                             AI extraction step.
+#   fridge-mail-idle.service  always on   -- holds ONE IMAP IDLE connection and
+#                                            reacts the moment mail arrives.
+#   fridge-brief.timer        every 15 min -- calendar, tasks, HA. No IMAP.
+#   fridge-brief-mail.timer   every 3 h    -- BACKSTOP only, now that IDLE does
+#                                            the reacting. Deliberately not
+#                                            removed: a daemon that dies quietly
+#                                            is indistinguishable from a quiet
+#                                            mailbox, and this bounds that to
+#                                            hours-late rather than never.
 #
 # The split exists because polling Gmail every 15 minutes is ~96 automated
 # logins a day from a server IP, and an app password on this account has
@@ -64,6 +68,20 @@ trap 'rm -f "\$OUT"' EXIT
 # flock: a slow IMAP run must never overlap the next timer tick.
 exec 9>/tmp/fridge-brief.lock
 flock -n 9 || { echo "\$(date -Is) SKIP: previous run still going" >> "\$LOG"; exit 0; }
+
+# Watchdog: the IDLE daemon's only evidence of life is the age of its
+# heartbeat. Checked here rather than in a separate unit, because this already
+# runs every 15 minutes and a watchdog that needs its own watchdog is worse.
+HB=/tmp/brief-idle-heartbeat
+if [ -f "\$HB" ]; then
+  AGE=\$(( \$(date +%s) - \$(stat -c %Y "\$HB") ))
+  # The daemon touches it at least every renewal (24 min) and on reconnect.
+  if [ "\$AGE" -gt 2400 ]; then
+    echo "\$(date -Is) WARN: IDLE heartbeat is \${AGE}s old -- watcher may be dead" >> "\$LOG"
+  fi
+else
+  echo "\$(date -Is) WARN: no IDLE heartbeat file -- watcher never started" >> "\$LOG"
+fi
 
 ARGS=()
 if [ "\${1:-}" = "mail" ]; then
@@ -139,11 +157,13 @@ EOF
 
 cat > "$UNIT_DIR/fridge-brief-mail.timer" <<EOF
 [Unit]
-Description=Fridge brief mail refresh, hourly -- the ONLY thing that opens IMAP
+Description=Fridge brief mail BACKSTOP every 3h -- IDLE does the reacting
 
 [Timer]
 # :07 rather than :00 so it does not collide with the 15-minute tick.
-OnCalendar=*:07
+# Was hourly; IDLE now handles arrival, so this is a safety net rather than
+# the mechanism. Three hours is "if the daemon is dead, mail is late, not lost".
+OnCalendar=00/3:07
 Persistent=true
 RandomizedDelaySec=120
 
@@ -151,8 +171,34 @@ RandomizedDelaySec=120
 WantedBy=timers.target
 EOF
 
+# --- the IDLE watcher ---------------------------------------------------------
+cat > "$UNIT_DIR/fridge-mail-idle.service" <<EOF
+[Unit]
+Description=Watch the bot mailbox with IMAP IDLE and react on arrival
+After=network-online.target
+# StartLimit* belong in [Unit]. Put in [Service] systemd ignores them with only
+# a log line, so the crash-loop backoff would silently not exist.
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 $STACK_DIR/brief/mail_idle.py --runner $RUNNER
+# A watcher that stays dead is the failure mode that looks like silence.
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target
+EOF
+
 systemctl --user daemon-reload
 systemctl --user enable --now fridge-brief.timer fridge-brief-mail.timer >/dev/null
+# `daemon-reload` does not re-arm a timer sitting in the `elapsed` state: an
+# edited OnCalendar is loaded but never scheduled, and `list-timers` shows
+# NEXT as "-". Restarting is what actually applies a schedule change.
+systemctl --user restart fridge-brief.timer fridge-brief-mail.timer
+systemctl --user enable --now fridge-mail-idle.service >/dev/null
 
 # Without lingering, user timers stop the moment the ssh session closes.
 loginctl enable-linger "$USER" >/dev/null 2>&1 || true
