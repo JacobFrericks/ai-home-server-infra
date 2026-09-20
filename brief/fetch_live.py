@@ -39,6 +39,13 @@ ENV = os.environ.get("FAMILY_ENV", os.path.expanduser("~/docker/ai-stack/.env.fa
 #
 # Nothing needs minute-level mail. The panel itself only re-reads its file
 # every 10 minutes.
+# extract.py writes the model's headline here on the hourly run; the 15-minute
+# job reuses it and never calls the model itself. A missing or stale file is
+# not an error -- generate_brief's deterministic sentence takes over, so the
+# wall never goes blank because the GPU was busy.
+HEADLINE_CACHE = os.environ.get("HEADLINE_CACHE", "/tmp/brief-headline.txt")
+HEADLINE_MAX_AGE = int(os.environ.get("HEADLINE_MAX_AGE", "86400"))
+
 MAIL_CACHE = os.environ.get("MAIL_CACHE", "/tmp/brief-mail-cache.json")
 MAIL_MAX_AGE = int(os.environ.get("MAIL_MAX_AGE", "3600"))   # seconds
 
@@ -154,12 +161,14 @@ def fetch_mail(env: dict, since_days: int = 2, limit: int = 20) -> dict:
     M.login(env["BOT_EMAIL"], env["BOT_IMAP_APP_PASSWORD"].replace(" ", ""))
     M.select("INBOX", readonly=True)
     since = (date.today() - timedelta(days=since_days)).strftime("%d-%b-%Y")
-    ok, data = M.search(None, f'(SINCE "{since}")')
+    # UID rather than sequence number: sequence numbers shift as the mailbox
+    # changes, and extract.py flags these messages from a different session.
+    ok, data = M.uid("SEARCH", None, f'(SINCE "{since}")')
     ids = (data[0].split() if ok == "OK" and data[0] else [])[-limit:]
 
     msgs = []
     for i in ids:
-        ok, raw = M.fetch(i, "(BODY.PEEK[])")     # PEEK: do not set \\Seen
+        ok, raw = M.uid("FETCH", i, "(BODY.PEEK[])")   # PEEK: do not set \\Seen
         if ok != "OK" or not raw or not raw[0]:
             continue
         import email as _email
@@ -183,6 +192,8 @@ def fetch_mail(env: dict, since_days: int = 2, limit: int = 20) -> dict:
         payload = part(m)
         payload["headers"] = hdrs
         msgs.append({
+            # The IMAP UID, so extract.py can flag exactly this message later.
+            "_uid": i.decode() if isinstance(i, bytes) else str(i),
             "id": m.get("Message-ID", str(i)),
             "threadId": (m.get("In-Reply-To") or m.get("Message-ID") or str(i)),
             "labelIds": ["UNREAD"],
@@ -276,6 +287,17 @@ def main(argv=None) -> int:
         return 0
 
     doc = gen.build(raw["calendar"], raw["mail"], raw["todos"], date.today(), lists)
+
+    # Prefer the model's sentence when there is a fresh one.
+    try:
+        if time.time() - os.path.getmtime(HEADLINE_CACHE) < HEADLINE_MAX_AGE:
+            with open(HEADLINE_CACHE) as f:
+                h = f.read().strip()
+            if h:
+                doc["headline"] = h
+                print("headline : from model", file=sys.stderr)
+    except OSError:
+        print("headline : generated (no model headline cached)", file=sys.stderr)
     if errs:
         doc["warnings"] = errs
     text = json.dumps(doc, indent=2)

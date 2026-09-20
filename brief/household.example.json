@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy to brief/household.json (git-ignored) and fill in real names. GRADES ARE ANCHORS, not literals: store the grade together with the school year it was true in, and it is computed forward from there -- so it rolls over every August by itself instead of going quietly stale. 0 is kindergarten, 1 is first grade, and NEGATIVE numbers are the years before kindergarten. `grade_labels` is keyed BY GRADE NUMBER, not by child, so a school's own name for a year (e.g. a transitional year below kindergarten) follows the grade and a child simply moves out of it.",
+  "children": [
+    {"name": "Child A", "anchor_grade": 2, "anchor_school_year": 2026},
+    {"name": "Child B", "anchor_grade": -1, "anchor_school_year": 2026}
+  ],
+  "grade_labels": {"-1": "pre-kindergarten"},
+  "school_year_starts_month": 8
+}

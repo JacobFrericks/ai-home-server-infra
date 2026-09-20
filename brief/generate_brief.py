@@ -62,6 +62,13 @@ MAX_ITEMS = 4
 # items down or off. Found in real data, not imagined.
 MAX_OVERDUE_DAYS = 14
 
+# How much of a message body to keep. This was 4000, which silently cut a real
+# school newsletter mid-way -- and the part lost held the one item that
+# actually applied to this family. The model has a 64k window; the panel never
+# renders the body at all, so the only cost of a generous limit is prompt
+# tokens on a call that happens a few times a day.
+MAIL_BODY_LIMIT = int(os.environ.get("MAIL_BODY_LIMIT", "24000"))
+
 # WHO LIVES HERE IS NOT IN THIS REPO.
 # ------------------------------------
 # This repo is PUBLIC. Household member names -- and the Home Assistant entity
@@ -249,7 +256,7 @@ def clean_body(text: str, keep_short_urls: bool = True) -> str:
     return "\n".join(l.rstrip() for l in text.splitlines()).strip()
 
 
-def message_body(msg: dict, limit: int = 4000) -> str:
+def message_body(msg: dict, limit: int = MAIL_BODY_LIMIT) -> str:
     """The readable text of a Gmail message.
 
     Three things make this more than a one-liner, and each is a real trap:
