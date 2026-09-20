@@ -9,7 +9,9 @@
 # ---------------------------------------------------------------------------
 #   fridge-brief.timer       every 15 min  -- calendar, tasks, HA. Mail comes
 #                                             from a local cache; no IMAP.
-#   fridge-brief-mail.timer  every 60 min  -- the only thing that opens IMAP.
+#   fridge-brief-mail.timer  every 60 min  -- the only thing that opens IMAP,
+#                                             and the only thing that runs the
+#                                             AI extraction step.
 #
 # The split exists because polling Gmail every 15 minutes is ~96 automated
 # logins a day from a server IP, and an app password on this account has
@@ -64,7 +66,17 @@ exec 9>/tmp/fridge-brief.lock
 flock -n 9 || { echo "\$(date -Is) SKIP: previous run still going" >> "\$LOG"; exit 0; }
 
 ARGS=()
-[ "\${1:-}" = "mail" ] && ARGS+=(--refresh-mail)
+if [ "\${1:-}" = "mail" ]; then
+  ARGS+=(--refresh-mail)
+  # The AI step runs ONLY here, on the hourly tick, and only when there is
+  # unread mail (extract.py exits immediately otherwise). gemma4:26b is 17 GB;
+  # calling it every 15 minutes would risk evicting the chat model and buy no
+  # freshness -- the panel re-reads its file every 10 minutes anyway.
+  # Failure is non-fatal: the brief is still built and pushed without it.
+  timeout 900 python3 "\$STACK_DIR/brief/extract.py" \\
+      --headline-out /tmp/brief-headline.txt >>"\$LOG" 2>&1 \\
+    || echo "\$(date -Is) WARN: extract failed (brief still built)" >> "\$LOG"
+fi
 
 if ! timeout 180 python3 "\$STACK_DIR/brief/fetch_live.py" "\${ARGS[@]}" -o "\$OUT" 2>>"\$LOG"; then
   echo "\$(date -Is) FAIL: fetch_live" >> "\$LOG"
