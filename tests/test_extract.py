@@ -328,5 +328,45 @@ class Config(unittest.TestCase):
             self.assertTrue(c["name"].startswith("Child"))
 
 
+class Note(unittest.TestCase):
+    """The item description -- the half of an item the wall never shows.
+
+    A title short enough for a four-column panel cannot also explain itself,
+    so the answer to "what is that about?" has to live somewhere the panel
+    does not read. That is `description`, and its content is the already-
+    verified evidence quote rather than a fresh summary.
+    """
+
+    MSG = {"from": "Parent <parent@example.com>", "received": "2026-09-20",
+           "subject": "Weekly newsletter", "body": "irrelevant here"}
+
+    def test_provenance_is_still_the_first_line(self):
+        note = ex.build_note(self.MSG, {"evidence": "the parent meeting is on the 14th"})
+        self.assertTrue(note.startswith("From Parent <parent@example.com>, 2026-09-20"))
+
+    def test_evidence_is_quoted_verbatim(self):
+        note = ex.build_note(self.MSG, {"evidence": "Parent meeting, Sept 14, 6pm, gym"})
+        self.assertIn('"Parent meeting, Sept 14, 6pm, gym"', note)
+        self.assertIn("Subject: Weekly newsletter", note)
+
+    def test_rewrapped_evidence_is_collapsed_to_one_line(self):
+        note = ex.build_note(self.MSG, {"evidence": "Parent meeting,\n  Sept 14"})
+        self.assertIn('"Parent meeting, Sept 14"', note)
+
+    def test_long_evidence_is_truncated_not_dropped(self):
+        note = ex.build_note(self.MSG, {"evidence": "x" * (ex.MAX_EVIDENCE + 50)})
+        self.assertIn("...", note)
+        self.assertLess(len(note), ex.MAX_EVIDENCE + 200)
+
+    def test_missing_evidence_leaves_provenance_alone(self):
+        note = ex.build_note(self.MSG, {})
+        self.assertEqual(note,
+                         "From Parent <parent@example.com>, 2026-09-20\n"
+                         "Subject: Weekly newsletter")
+
+    def test_empty_message_does_not_raise(self):
+        self.assertIsInstance(ex.build_note({}, {}), str)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
