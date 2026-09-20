@@ -1,9 +1,23 @@
 {
-  "_comment": "Copy to brief/household.json (git-ignored) and fill in real names. GRADES ARE ANCHORS, not literals: store the grade together with the school year it was true in, and it is computed forward from there -- so it rolls over every August by itself instead of going quietly stale. 0 is kindergarten, 1 is first grade, and NEGATIVE numbers are the years before kindergarten. `grade_labels` is keyed BY GRADE NUMBER, not by child, so a school's own name for a year (e.g. a transitional year below kindergarten) follows the grade and a child simply moves out of it.",
-  "children": [
-    {"name": "Child A", "anchor_grade": 2, "anchor_school_year": 2026},
-    {"name": "Child B", "anchor_grade": -1, "anchor_school_year": 2026}
+  "_comment": "Copy to brief/household.json (git-ignored) and fill in real values. trusted_senders IS THE SECURITY BOUNDARY: the bot's address is public, so without it anyone who learns it can put a line on the kitchen wall and have the model read their text. Checked against From, Return-Path and X-Forwarded-For -- the last one so Gmail FILTER forwarding, which keeps the original sender in From, still works. Empty means accept anything. GRADES ARE ANCHORS, not literals: stored with the school year they were true in and computed forward, so they roll over every August by themselves. 0 is kindergarten, negative numbers are the years before it. grade_labels is keyed BY GRADE NUMBER, not by child, so a child moves out of a label rather than wearing it forever.",
+  "trusted_senders": [
+    "parent-a@example.com",
+    "parent-b@example.com"
   ],
-  "grade_labels": {"-1": "pre-kindergarten"},
+  "children": [
+    {
+      "name": "Child A",
+      "anchor_grade": 2,
+      "anchor_school_year": 2026
+    },
+    {
+      "name": "Child B",
+      "anchor_grade": -1,
+      "anchor_school_year": 2026
+    }
+  ],
+  "grade_labels": {
+    "-1": "pre-kindergarten"
+  },
   "school_year_starts_month": 8
 }

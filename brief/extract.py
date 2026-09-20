@@ -72,6 +72,57 @@ SUGGESTED_ENTITY = os.environ.get("SUGGESTED_ENTITY", "todo.family_suggested")
 NOT_US = "NOT_US"
 
 
+# --- who may put things on the wall ------------------------------------------
+
+def _addresses(value: str) -> list[str]:
+    """Every bare address in a header value, lowercased."""
+    return [a.lower() for a in
+            re.findall(r"[\w.+-]+@[\w-]+\.[\w.-]+", value or "")]
+
+
+def sender_allowed(msg_headers: dict, trusted: list[str]) -> tuple:
+    """(allowed, reason). Empty `trusted` allows everything, loudly.
+
+    WHY THIS EXISTS: the bot has a public email address, so without it anyone
+    who learns that address can put a line on this family's kitchen wall, and
+    the model will dutifully read their text looking for instructions. The
+    allowlist is the boundary; the guards in verify_items are what happens
+    after something is already inside it.
+
+    Checked against `From`, `Return-Path` (the SMTP envelope sender, which the
+    receiving server sets rather than the sender asserting it), and
+    `X-Forwarded-For`. That last one matters for Gmail FILTER forwarding:
+    auto-forwarded mail keeps the ORIGINAL sender in From, so a From-only
+    check would reject exactly the mail the filters exist to deliver.
+
+    Worth being honest about the strength: `From` is trivially forgeable in
+    general. It is meaningful here only because both addresses are gmail.com
+    and Google enforces DMARC on its own domain, so a forged gmail.com sender
+    does not reach this inbox in the first place. The allowlist raises the
+    floor; it is not a cryptographic check.
+    """
+    if not trusted:
+        return True, "no allowlist configured (everything accepted)"
+    allow = {t.lower() for t in trusted}
+
+    frm = _addresses(msg_headers.get("From", ""))
+    if any(a in allow for a in frm):
+        return True, "From"
+
+    # Envelope sender: set by the receiving server, not asserted by the client.
+    rp = _addresses(msg_headers.get("Return-Path", ""))
+    if any(a in allow for a in rp):
+        return True, "Return-Path"
+
+    # Gmail filter auto-forwarding keeps the original From and records the
+    # forwarding chain here instead.
+    fwd = _addresses(msg_headers.get("X-Forwarded-For", ""))
+    if any(a in allow for a in fwd):
+        return True, "X-Forwarded-For"
+
+    return False, f"sender not trusted ({', '.join(frm) or 'unknown'})"
+
+
 # --- who lives here ----------------------------------------------------------
 
 # Grade numbering: 0 is kindergarten, 1 is first grade, and NEGATIVE numbers
@@ -79,6 +130,9 @@ NOT_US = "NOT_US"
 # below kindergarten under its own name (-1), so the labels are config rather
 # than constants -- the model should read the word the school actually uses.
 DEFAULT_HOUSEHOLD = {
+    # Empty means "accept anything", which is the old behaviour. A real
+    # deployment fills this in; see household.example.json.
+    "trusted_senders": [],
     "children": [
         {"name": "Child A", "anchor_grade": 2, "anchor_school_year": 2026},
         {"name": "Child B", "anchor_grade": -1, "anchor_school_year": 2026},
@@ -452,6 +506,29 @@ def main(argv=None) -> int:
           file=sys.stderr)
 
     mail = fl.fetch_mail(env, since_days=7, limit=25)
+
+    # Filter BY SENDER FIRST, before the body ever reaches the model. This is
+    # the boundary: everything past it is treated as text the household chose
+    # to hand over. Rejected mail is left UNREAD on purpose -- it costs one
+    # header check per run, and it means adding a sender to the allowlist
+    # later picks up what was already refused instead of losing it.
+    trusted = household.get("trusted_senders", [])
+    if not trusted:
+        print("WARNING: no trusted_senders configured -- accepting any sender",
+              file=sys.stderr)
+    allowed_raw, refused = [], []
+    for m in mail["messages"]:
+        hdrs = {h["name"]: h["value"] for h in (m.get("payload") or {}).get("headers", [])}
+        ok, why = sender_allowed(hdrs, trusted)
+        (allowed_raw if ok else refused).append((m, why))
+    for m, why in refused:
+        print(f"  refused: {gen._header(m, 'Subject')[:44]!r} ({why})",
+              file=sys.stderr)
+    if refused:
+        print(f"refused   : {len(refused)} message(s) from untrusted senders",
+              file=sys.stderr)
+
+    mail = {"messages": [m for m, _ in allowed_raw]}
     by_uid = {m["_uid"]: m for m in mail["messages"]}
     msgs = gen.mail_summaries(mail, unread_only=not a.all_mail)
     # mail_summaries collapses threads; map each back to its UIDs to flag later.
@@ -460,7 +537,7 @@ def main(argv=None) -> int:
         subj_uids.setdefault(gen._header(raw, "Subject"), []).append(uid)
 
     if not msgs:
-        print("no unread mail; nothing to do", file=sys.stderr)
+        print("nothing to do", file=sys.stderr)
         return 0
     print(f"unread    : {len(msgs)} message(s)", file=sys.stderr)
 

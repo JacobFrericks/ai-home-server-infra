@@ -146,6 +146,66 @@ class EvidenceGuard(unittest.TestCase):
             self.assertEqual(ex.verify_items(bad, self.SOURCE, self.KEYS)[0], [])
 
 
+class SenderAllowlist(unittest.TestCase):
+    """The outer boundary. The bot has a public address, so without this
+    anyone who learns it can put a line on the family's kitchen wall and have
+    the model read their text looking for instructions."""
+
+    TRUSTED = ["parent-a@example.com", "parent-b@example.com"]
+
+    def allowed(self, headers):
+        return ex.sender_allowed(headers, self.TRUSTED)[0]
+
+    def test_trusted_sender_accepted(self):
+        self.assertTrue(self.allowed({"From": "A <parent-a@example.com>"}))
+
+    def test_stranger_refused(self):
+        self.assertFalse(self.allowed({"From": "Someone <stranger@example.com>"}))
+
+    def test_lookalike_domain_refused(self):
+        """The address appears as a SUBSTRING of a hostile domain. A naive
+        `in` check passes this; matching whole addresses does not."""
+        self.assertFalse(self.allowed(
+            {"From": "A <parent-a@example.com.evil.test>"}))
+
+    def test_school_writing_direct_is_refused(self):
+        """Forwarding is the permission. A sender the family never chose does
+        not get in just by being legitimate."""
+        self.assertFalse(self.allowed({"From": "School <office@school.example.edu>"}))
+
+    def test_gmail_filter_forwarding_is_accepted(self):
+        """Auto-forwarded mail keeps the ORIGINAL sender in From, so a
+        From-only check would reject exactly the mail the filters exist to
+        deliver. The forwarding chain is what proves a trusted account sent it."""
+        self.assertTrue(self.allowed({
+            "From": "School <office@school.example.edu>",
+            "X-Forwarded-For": "parent-a@example.com bot@example.com"}))
+
+    def test_envelope_sender_counts(self):
+        """Return-Path is set by the receiving server, not asserted by the
+        client, so it is the stronger of the two when they disagree."""
+        self.assertTrue(self.allowed(
+            {"From": "Display Name Only", "Return-Path": "<parent-b@example.com>"}))
+
+    def test_case_is_ignored(self):
+        self.assertTrue(self.allowed({"From": "<PARENT-A@Example.COM>"}))
+
+    def test_empty_allowlist_accepts_everything(self):
+        """Backwards-compatible, and main() warns loudly when it happens --
+        silently accepting everything would be the worse failure."""
+        ok, why = ex.sender_allowed({"From": "anyone@anywhere.test"}, [])
+        self.assertTrue(ok)
+        self.assertIn("no allowlist", why)
+
+    def test_missing_headers_refused(self):
+        for h in ({}, {"From": ""}, {"From": "not an address"}):
+            self.assertFalse(self.allowed(h), f"accepted {h!r}")
+
+    def test_refusal_says_why(self):
+        _, why = ex.sender_allowed({"From": "x@bad.test"}, self.TRUSTED)
+        self.assertIn("x@bad.test", why)
+
+
 class Schema(unittest.TestCase):
     def test_applies_to_enum_is_built_from_the_household(self):
         sch = ex._schema(["kid-a", "kid-b"])
