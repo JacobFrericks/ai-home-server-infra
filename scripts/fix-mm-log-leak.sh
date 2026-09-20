@@ -24,8 +24,18 @@
 #      umask, so per-file chmod fixes only today.
 #   4. Lock config.js, which holds the same URLs by necessity.
 #
-# Part 1 alone is not enough: fetch FAILURES log the URL at error level too.
-# Part 3 is what holds when part 1 misses a case.
+# Part 1 alone is not enough: fetch FAILURES log the URL at ERROR level, and
+# ERROR has to stay on -- it is how a broken feed is noticed at all. So a
+# secret CAN still reach the disk, and the redaction pass is not a one-time
+# cleanup. Hence --install: a timer that re-runs it, so the exposure window is
+# bounded by a schedule rather than by somebody remembering.
+#
+# Part 3 -- the 700 directory -- is what holds in between, and needs nobody to
+# remember anything. It is the durable control; the timer bounds how long a
+# leaked line sits there for the one account that can read it.
+#
+#   ./fix-mm-log-leak.sh              # redact + harden once
+#   ./fix-mm-log-leak.sh --install    # the above, plus a 15-minute timer
 set -euo pipefail
 
 # Overridable so this is not welded to one account's home directory.
@@ -77,3 +87,42 @@ left=$(grep -rho "private-[a-f0-9]\{16,\}" "$LOGS" 2>/dev/null | sort -u | wc -l
 left=${left:-0}
 log "secret keys remaining in logs: $left"
 [ "$left" -eq 0 ] || { echo "[fix-mm-logs] ERROR: secrets still present" >&2; exit 1; }
+
+
+# --- optional: keep doing it -------------------------------------------------
+if [ "${1:-}" = "--install" ]; then
+  UNIT_DIR="$HOME/.config/systemd/user"
+  SELF="$(readlink -f "$0")"
+  mkdir -p "$UNIT_DIR"
+
+  cat > "$UNIT_DIR/mm-log-redact.service" <<EOF
+[Unit]
+Description=Redact secret calendar URLs from MagicMirror logs
+
+[Service]
+Type=oneshot
+ExecStart=$SELF
+EOF
+
+  cat > "$UNIT_DIR/mm-log-redact.timer" <<EOF
+[Unit]
+Description=Re-redact MagicMirror logs every 15 minutes
+
+[Timer]
+# Bounds how long an ERROR-level leak can sit on disk. It cannot prevent the
+# write -- only the log level could, and ERROR must stay on.
+OnCalendar=*:3/15
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  systemctl --user daemon-reload
+  systemctl --user enable --now mm-log-redact.timer >/dev/null
+  # Without lingering, user timers die when the ssh session ends.
+  loginctl enable-linger "$USER" >/dev/null 2>&1 || true
+  log "timer installed:"
+  systemctl --user list-timers mm-log-redact.timer --no-pager | head -3
+fi
