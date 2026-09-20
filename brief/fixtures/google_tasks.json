@@ -1,0 +1,36 @@
+{
+  "_comment": "Google Tasks API v1. Two calls: tasklists.list then tasks.list per list. https://developers.google.com/tasks/reference/rest . THE QUIRK THAT MATTERS: `due` is RFC3339 with a time component, but Google Tasks has NO concept of a due TIME -- the time is always 00:00:00.000Z and is meaningless. Only the date part may be used. `status` is needsAction|completed, and completed tasks are omitted entirely unless showCompleted=true. A task may have no `due` at all.",
+  "tasklists": {
+    "kind": "tasks#taskLists",
+    "items": [
+      {"kind": "tasks#taskList", "id": "MTIzNDU2Nzg5", "title": "My Tasks", "updated": "2026-09-19T21:40:11.000Z"},
+      {"kind": "tasks#taskList", "id": "OTg3NjU0MzIx", "title": "Chores", "updated": "2026-09-01T10:00:00.000Z"}
+    ]
+  },
+  "tasks": {
+    "MTIzNDU2Nzg5": {
+      "kind": "tasks#tasks",
+      "items": [
+        {"kind": "tasks#task", "id": "t1", "title": "Picture day", "status": "needsAction",
+         "due": "2026-09-23T00:00:00.000Z", "position": "00000000000000000000",
+         "updated": "2026-09-19T14:02:00.000Z"},
+        {"kind": "tasks#task", "id": "t2", "title": "Put the library book in the backpack",
+         "status": "needsAction", "due": "2026-09-20T00:00:00.000Z",
+         "position": "00000000000000000001", "updated": "2026-09-19T14:03:00.000Z"},
+        {"kind": "tasks#task", "id": "t3", "title": "Order a yearbook", "status": "needsAction",
+         "due": "2026-09-09T00:00:00.000Z", "position": "00000000000000000002",
+         "updated": "2026-09-08T09:00:00.000Z"},
+        {"kind": "tasks#task", "id": "t4", "title": "Fix the gate latch", "status": "needsAction",
+         "position": "00000000000000000003", "updated": "2026-09-02T09:00:00.000Z"},
+        {"kind": "tasks#task", "id": "t5", "title": "Laundry", "status": "needsAction",
+         "due": "2013-07-13T00:00:00.000Z", "position": "00000000000000000004",
+         "updated": "2013-07-13T09:00:00.000Z",
+         "notes": "Thirteen years overdue. Without a staleness rule this sorts FIRST and becomes the most urgent thing on the kitchen wall."},
+        {"kind": "tasks#task", "id": "t6", "title": "Already done", "status": "completed",
+         "due": "2026-09-18T00:00:00.000Z", "completed": "2026-09-18T20:00:00.000Z",
+         "position": "00000000000000000005", "updated": "2026-09-18T20:00:00.000Z"}
+      ]
+    },
+    "OTg3NjU0MzIx": {"kind": "tasks#tasks", "items": []}
+  }
+}
