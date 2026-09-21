@@ -45,6 +45,11 @@ PI_USER="${PI_USER:-$USER}"
 log() { echo "[fridge-brief $(date +%H:%M:%S)] $*"; }
 die() { echo "[fridge-brief] ERROR: $*" >&2; exit 1; }
 
+# Attachment reading is poppler's. Checked here rather than discovered at 6am:
+# without it a PDF newsletter silently contributes nothing and the wall just
+# looks like a quiet week.
+command -v pdftotext >/dev/null \
+  || die "pdftotext not found -- install poppler-utils (apt-get install -y poppler-utils)"
 [ -s "$STACK_DIR/.env.family" ] || die "missing .env.family -- credentials not provisioned"
 [ -s "$HOME/.ssh/brief_to_pi" ] || die "missing ~/.ssh/brief_to_pi -- push key not provisioned"
 [ -x "$STACK_DIR/brief/fetch_live.py" ] || chmod +x "$STACK_DIR/brief/fetch_live.py"
