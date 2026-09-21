@@ -46,6 +46,7 @@ import html as html_mod
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import date, datetime, timedelta
 
@@ -101,6 +102,15 @@ def filler_for(today: date) -> str:
 # renders the body at all, so the only cost of a generous limit is prompt
 # tokens on a call that happens a few times a day.
 MAIL_BODY_LIMIT = int(os.environ.get("MAIL_BODY_LIMIT", "24000"))
+
+# A forwarded school newsletter is often a PDF with a one-line "see attached"
+# above it -- all of the dates, none of them in the message body. poppler's
+# pdftotext is the reader; see _pdf_text for why it is a subprocess.
+PDFTOTEXT = os.environ.get("PDFTOTEXT", "pdftotext")
+PDF_TIMEOUT = int(os.environ.get("PDF_TIMEOUT", "20"))
+# Per attachment, so one enormous file cannot crowd the mail's own text out of
+# the prompt. The overall body is capped separately by MAIL_BODY_LIMIT.
+PDF_TEXT_LIMIT = int(os.environ.get("PDF_TEXT_LIMIT", "12000"))
 
 # WHO LIVES HERE IS NOT IN THIS REPO.
 # ------------------------------------
@@ -234,6 +244,46 @@ def _decode(data: str) -> str:
         return ""
 
 
+def _decode_bytes(data: str) -> bytes:
+    """The same base64URL decode as _decode, stopping before the text step --
+    an attachment is bytes and guessing an encoding for it would be nonsense."""
+    if not data:
+        return b""
+    pad = "=" * (-len(data) % 4)
+    try:
+        return base64.urlsafe_b64decode(data + pad)
+    except (ValueError, binascii.Error):
+        return b""
+
+
+def _pdf_text(raw: bytes) -> str:
+    """The text layer of a PDF, or "" if there isn't one to be had.
+
+    Shells out to poppler's pdftotext rather than taking a Python PDF
+    dependency: it is already on the host, it is the reference implementation,
+    and running it as a separate short-lived process means a malformed file
+    from the internet crashes a subprocess instead of the brief.
+
+    Returns "" for every failure -- missing binary, timeout, scanned pages with
+    no text layer. A PDF that cannot be read is not an error here; the mail's
+    own body is still extracted and the run continues.
+    """
+    if not raw:
+        return ""
+    try:
+        out = subprocess.run(
+            # No -layout: it preserves visual columns, which interleaves two
+            # columns of prose into nonsense lines. The default reading order
+            # keeps sentences whole, and whole sentences are what the model has
+            # to quote back as evidence.
+            [PDFTOTEXT, "-q", "-", "-"],
+            input=raw, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=PDF_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout.decode("utf-8", "replace") if out.returncode == 0 else ""
+
+
 def _strip_html(html: str) -> str:
     """Crude but sufficient: these are school newsletters, not documents."""
     text = re.sub(r"(?is)<(script|style).*?</\1>", " ", html)
@@ -307,10 +357,11 @@ def message_body(msg: dict, limit: int = MAIL_BODY_LIMIT) -> str:
     Also note format=metadata returns no body at all -- the client must request
     format=full or this is empty through no fault of the parsing.
     """
-    plain, html = [], []
+    plain, html, docs = [], [], []
 
     def walk(part):
         mime = (part.get("mimeType") or "").lower()
+        name = part.get("filename") or ""
         body = part.get("body") or {}
         if part.get("parts"):
             for sub in part["parts"]:
@@ -318,6 +369,12 @@ def message_body(msg: dict, limit: int = MAIL_BODY_LIMIT) -> str:
             return
         # An attachment has an id instead of inline data. Skip it.
         if body.get("attachmentId") and not body.get("data"):
+            return
+        if mime == "application/pdf" or name.lower().endswith(".pdf"):
+            got = _pdf_text(_decode_bytes(body.get("data", "")))
+            if got.strip():
+                docs.append((name or "attachment.pdf",
+                             clean_body(got, keep_short_urls=False)[:PDF_TEXT_LIMIT]))
             return
         text = _decode(body.get("data", ""))
         if not text:
@@ -328,8 +385,15 @@ def message_body(msg: dict, limit: int = MAIL_BODY_LIMIT) -> str:
             html.append(_strip_html(text))
 
     walk(msg.get("payload") or {})
-    text = "\n".join(plain) if plain else "\n".join(html)
-    return clean_body(text)[:limit]
+    text = clean_body("\n".join(plain) if plain else "\n".join(html))
+    # Attachments go AFTER the message text and are labelled, so the model can
+    # tell "the school wrote this" from "somebody typed this in the forward",
+    # and so the evidence quote it must produce still points at something a
+    # human can find. The quote is checked against this whole string, so a PDF
+    # is grounded exactly as the body is.
+    for name, got in docs:
+        text += f"\n\n--- attached file: {name} ---\n{got}"
+    return text[:limit]
 
 
 def mail_summaries(mail: dict, unread_only: bool = True,

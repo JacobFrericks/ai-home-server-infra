@@ -177,7 +177,11 @@ def fetch_mail(env: dict, since_days: int = 2, limit: int = 20) -> dict:
         # Re-shape into the Gmail API structure the transforms already parse,
         # so one code path serves both fixtures and live mail.
         def part(p):
-            d = {"mimeType": p.get_content_type(), "body": {}}
+            # `filename` is part of the Gmail API part shape too, so carrying it
+            # keeps one code path over fixtures and live mail. It is what labels
+            # an attachment's text in the prompt.
+            d = {"mimeType": p.get_content_type(),
+                 "filename": p.get_filename() or "", "body": {}}
             if p.is_multipart():
                 d["parts"] = [part(x) for x in p.get_payload()]
             else:

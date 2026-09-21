@@ -9,7 +9,9 @@ credentials arrive, only the fetch changes and these still hold.
 
 Run: python3 tests/test_brief.py
 """
+import base64
 import importlib.util
+import shutil
 import json
 import os
 import sys
@@ -571,6 +573,131 @@ class Filler(unittest.TestCase):
 
     def test_fillers_are_unique(self):
         self.assertEqual(len(set(gen.FILLERS)), len(gen.FILLERS))
+
+
+def _b64(raw: bytes) -> str:
+    """Gmail's unpadded base64URL, the shape message_body expects."""
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+# A minimal one-page PDF with a real text layer, built by hand so the test
+# needs no fixture file and no PDF library -- only the pdftotext that the
+# pipeline itself shells out to.
+def _tiny_pdf(line: str) -> bytes:
+    content = f"BT /F1 12 Tf 72 720 Td ({line}) Tj ET".encode()
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n"
+        + content + b"\nendstream",
+    ]
+    out, offsets = bytearray(b"%PDF-1.4\n"), []
+    for i, body in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += str(i).encode() + b" 0 obj\n" + body + b"\nendobj\n"
+    start = len(out)
+    out += b"xref\n0 " + str(len(objs) + 1).encode() + b"\n0000000000 65535 f \n"
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += (b"trailer\n<< /Size " + str(len(objs) + 1).encode()
+            + b" /Root 1 0 R >>\nstartxref\n" + str(start).encode() + b"\n%%EOF\n")
+    return bytes(out)
+
+
+@unittest.skipUnless(shutil.which(gen.PDFTOTEXT), "pdftotext not installed")
+class PdfReader(unittest.TestCase):
+    """Reading a real PDF, with the real reader."""
+
+    def test_a_pdf_with_text_is_read(self):
+        got = gen._pdf_text(_tiny_pdf("Parent meeting September 14"))
+        self.assertIn("Parent meeting September 14", " ".join(got.split()))
+
+    def test_rubbish_bytes_yield_nothing_and_do_not_raise(self):
+        self.assertEqual(gen._pdf_text(b"this is not a pdf at all"), "")
+
+    def test_empty_input_yields_nothing(self):
+        self.assertEqual(gen._pdf_text(b""), "")
+
+
+class PdfReaderAbsent(unittest.TestCase):
+    """A missing reader must degrade, never crash the brief."""
+
+    def test_missing_binary_returns_empty(self):
+        real = gen.PDFTOTEXT
+        gen.PDFTOTEXT = "/nonexistent/pdftotext"
+        try:
+            self.assertEqual(gen._pdf_text(b"%PDF-1.4"), "")
+        finally:
+            gen.PDFTOTEXT = real
+
+
+class Attachments(unittest.TestCase):
+    """How a PDF part reaches the prompt. The reader itself is stubbed, so
+    these run anywhere -- only the walking and labelling is under test."""
+
+    def setUp(self):
+        self._real = gen._pdf_text
+        gen._pdf_text = lambda raw: "Picture day is October 3." if raw else ""
+
+    def tearDown(self):
+        gen._pdf_text = self._real
+
+    def msg(self, parts):
+        return {"payload": {"mimeType": "multipart/mixed", "parts": parts}}
+
+    TEXT = {"mimeType": "text/plain", "filename": "",
+            "body": {"data": _b64(b"See the attached newsletter.")}}
+    PDF = {"mimeType": "application/pdf", "filename": "Newsletter-wk4.pdf",
+           "body": {"data": _b64(b"%PDF-1.4 pretend")}}
+
+    def test_pdf_text_is_appended_and_labelled(self):
+        out = gen.message_body(self.msg([self.TEXT, self.PDF]))
+        self.assertIn("See the attached newsletter.", out)
+        self.assertIn("--- attached file: Newsletter-wk4.pdf ---", out)
+        self.assertIn("Picture day is October 3.", out)
+
+    def test_the_message_text_still_comes_first(self):
+        """Evidence quotes must stay locatable: the forward's own words, then
+        the document, not interleaved."""
+        out = gen.message_body(self.msg([self.TEXT, self.PDF]))
+        self.assertLess(out.index("See the attached"), out.index("attached file:"))
+
+    def test_a_pdf_alone_still_produces_a_body(self):
+        """The real case: a one-line forward whose dates are all in the PDF."""
+        out = gen.message_body(self.msg([self.PDF]))
+        self.assertIn("Picture day is October 3.", out)
+
+    def test_pdf_detected_by_extension_when_the_mime_type_is_generic(self):
+        part = {"mimeType": "application/octet-stream",
+                "filename": "Newsletter-wk4.PDF",
+                "body": {"data": _b64(b"%PDF-1.4 pretend")}}
+        self.assertIn("Picture day", gen.message_body(self.msg([part])))
+
+    def test_an_unreadable_pdf_is_skipped_not_labelled(self):
+        gen._pdf_text = lambda raw: ""
+        out = gen.message_body(self.msg([self.TEXT, self.PDF]))
+        self.assertIn("See the attached newsletter.", out)
+        self.assertNotIn("attached file:", out)
+
+    def test_a_non_pdf_attachment_is_still_ignored(self):
+        part = {"mimeType": "image/jpeg", "filename": "photo.jpg",
+                "body": {"data": _b64(b"\xff\xd8\xff binary")}}
+        out = gen.message_body(self.msg([self.TEXT, part]))
+        self.assertEqual(out.strip(), "See the attached newsletter.")
+
+    def test_a_remote_attachment_with_no_data_is_skipped(self):
+        part = {"mimeType": "application/pdf", "filename": "big.pdf",
+                "body": {"attachmentId": "abc123"}}
+        out = gen.message_body(self.msg([self.TEXT, part]))
+        self.assertNotIn("attached file:", out)
+
+    def test_the_overall_body_limit_still_applies(self):
+        gen._pdf_text = lambda raw: "x" * 50000
+        out = gen.message_body(self.msg([self.TEXT, self.PDF]), limit=500)
+        self.assertEqual(len(out), 500)
 
 
 if __name__ == "__main__":
