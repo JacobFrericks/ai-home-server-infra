@@ -62,6 +62,39 @@ MAX_ITEMS = 4
 # items down or off. Found in real data, not imagined.
 MAX_OVERDUE_DAYS = 14
 
+# Shown when the day is genuinely empty. The wall is a fixed band: an empty
+# headline leaves a hole where a sentence should be, which reads as broken
+# rather than as free. Twenty lines, reviewed by the household, chosen by the
+# date so the wall says one thing all day instead of changing every 15 minutes.
+FILLERS = [
+    "Nothing on the calendar today.",
+    "A clear day. Nothing booked, nothing due.",
+    "No plans today. The day is yours.",
+    "Quiet one today -- nothing on the books.",
+    "Nothing scheduled. A good day to go slow.",
+    "Empty calendar today. Enjoy the gap.",
+    "No appointments today. Nobody has to be anywhere.",
+    "Today is wide open.",
+    "Nothing due today. Take the win.",
+    "A free day. Rare, so use it well.",
+    "No events today. Good day for a long breakfast.",
+    "Clear today. Tomorrow can wait.",
+    "Nothing on today -- a good day to get ahead of the week.",
+    "Open day. Let the kids pick.",
+    "No commitments today. Rest counts.",
+    "Nothing booked. Good day to tick off something small.",
+    "A blank page today.",
+    "Calm day ahead. Nothing needs you yet.",
+    "Nothing on. Make something, or make nothing.",
+    "Free and clear today.",
+]
+
+
+def filler_for(today: date) -> str:
+    """Deterministic in the date, so the sentence is stable for the whole day
+    and still differs from yesterday's."""
+    return FILLERS[today.toordinal() % len(FILLERS)]
+
 # How much of a message body to keep. This was 4000, which silently cut a real
 # school newsletter mid-way -- and the part lost held the one item that
 # actually applied to this family. The model has a 64k window; the panel never
@@ -364,13 +397,40 @@ def _is_stale(due: str | None, today: date, max_days: int = MAX_OVERDUE_DAYS) ->
     return (today - d).days > max_days
 
 
-def _open_items(items: list[dict], today: date, max_days: int) -> list[dict]:
-    """Not completed, not ancient, soonest-due first."""
+def _beyond_horizon(due: str | None, today: date, max_ahead: int | None) -> bool:
+    """True for something too far out to be this week's business.
+
+    A list with no horizon keeps everything, which is the old behaviour. When a
+    horizon IS set, an undated item is hidden too: "the next 7 days" is a claim
+    about when a thing happens, and an item with no date makes no such claim.
+    """
+    if max_ahead is None:
+        return False
+    if not due:
+        return True
+    try:
+        d = date.fromisoformat(due[:10])
+    except ValueError:
+        return False            # a bad date loses the date, not the item
+    return (d - today).days > max_ahead
+
+
+def _open_items(items: list[dict], today: date, max_days: int,
+                max_ahead: int | None = None) -> list[dict]:
+    """Not completed, not ancient, not far-off, soonest-due first."""
     live = [i for i in items
             if i.get("status") != "completed"
-            and not _is_stale(i.get("due"), today, max_days)]
+            and not _is_stale(i.get("due"), today, max_days)
+            and not _beyond_horizon(i.get("due"), today, max_ahead)]
     live.sort(key=_due_key)
     return live
+
+
+def _due_today(items: list[dict], today: date) -> list[dict]:
+    """Open items dated exactly today. Overdue is not today, done is not today."""
+    return [i for i in items
+            if i.get("status") != "completed"
+            and (i.get("due") or "")[:10] == today.isoformat()]
 
 
 def _due_label(due: str | None, today: date) -> str:
@@ -414,6 +474,36 @@ def google_tasks_items(tasks_doc: dict, list_title: str) -> list[dict]:
     return out
 
 
+def _raw_items(todos: dict, spec: dict) -> list[dict]:
+    """One list spec's items, whichever source it names."""
+    if spec.get("source", "ha") == "google_tasks":
+        doc = (todos.get("google_tasks") or {}).get(spec.get("account", ""), {})
+        return google_tasks_items(doc, spec["list"])
+    # Home Assistant: todo.get_items nests under service_response.
+    resp = todos.get("service_response", todos)
+    return (resp.get(spec["entity"]) or {}).get("items", [])
+
+
+def items_due_today(todos: dict, today: date,
+                    lists: list[dict] = None) -> list[str]:
+    """Titles of every open to-do dated today, across the panel's lists.
+
+    This is what "today" means for the headline. The previous input was every
+    item the extractor pulled out of the morning's mail, which included items
+    it went on to skip as duplicates -- so a task finished last week could
+    still headline the wall.
+    """
+    out = []
+    for spec in (lists if lists is not None else load_lists()):
+        if not spec.get("panel", True):
+            continue
+        for i in _due_today(_raw_items(todos, spec), today):
+            title = (i.get("summary") or "").strip()
+            if title and title not in out:
+                out.append(title)
+    return out
+
+
 def todo_columns(todos: dict, today: date, lists: list[dict] = None) -> list[dict]:
     """The panel's columns, open items only, soonest-due first."""
     cols = []
@@ -421,18 +511,10 @@ def todo_columns(todos: dict, today: date, lists: list[dict] = None) -> list[dic
         if not spec.get("panel", True):
             continue
         owner, name, auto = spec["owner"], spec["name"], spec.get("auto", False)
-        src = spec.get("source", "ha")
         max_days = spec.get("max_overdue_days", MAX_OVERDUE_DAYS)
 
-        if src == "google_tasks":
-            doc = (todos.get("google_tasks") or {}).get(spec.get("account", ""), {})
-            raw = google_tasks_items(doc, spec["list"])
-        else:
-            # Home Assistant: todo.get_items nests under service_response.
-            resp = todos.get("service_response", todos)
-            raw = (resp.get(spec["entity"]) or {}).get("items", [])
-
-        items = _open_items(raw, today, max_days)
+        items = _open_items(_raw_items(todos, spec), today, max_days,
+                            spec.get("max_days_ahead"))
         cols.append({
             "owner": owner, "name": name, "auto": auto,
             "items": [{"text": i.get("summary", ""),
@@ -459,7 +541,7 @@ def build(events: dict, mail: dict, todos: dict, today: date,
         # with the real client.
         lines.append({"owner": "family", "text": f"{ev['summary']}{when}".strip()})
 
-    headline = _headline(todays)
+    headline = _headline(todays, items_due_today(todos, today, lists), today)
     return {
         "generated": datetime.now().isoformat(timespec="seconds"),
         "date": today.isoformat(),
@@ -472,12 +554,16 @@ def build(events: dict, mail: dict, todos: dict, today: date,
     }
 
 
-def _headline(todays: list[dict]) -> str:
+def _headline(todays: list[dict], due_today: list[str], today: date) -> str:
     """One plain sentence. A real deployment can hand this to the model instead;
     this fallback exists so the panel is never blank when the model is down."""
     timed = [e for e in todays if not e["all_day"]]
+    if not todays and not due_today:
+        return filler_for(today)
     if not todays:
-        return "Nothing on the calendar today."
+        if len(due_today) == 1:
+            return f"{due_today[0]} is due today."
+        return f"{len(due_today)} things due today."
     if not timed:
         return todays[0]["summary"] + "."
     first, last = timed[0], timed[-1]

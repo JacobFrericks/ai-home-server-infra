@@ -551,11 +551,43 @@ def mark_read(env: dict, uids: list) -> int:
 
 # --- headline ----------------------------------------------------------------
 
-def write_headline(events: list, items: list, kids: list, today: date) -> str:
+def todays_todos(fl, gen, env: dict, today: date) -> list:
+    """Open to-dos dated today, from the same lists the panel draws.
+
+    Read live rather than carried over from the extraction: the headline is a
+    claim about today, and what is on the lists today is the only thing that
+    can support it. Any source that fails is simply absent -- a dead Google
+    token must not cost the wall its headline.
+    """
+    lists = gen.load_lists()
+    todos = {"service_response": {}, "google_tasks": {}}
+    ents = [s["entity"] for s in lists
+            if s.get("source", "ha") == "ha" and s.get("entity")]
+    try:
+        todos.update(fl.fetch_ha_todos(env, ents))
+    except Exception as e:
+        print(f"  headline: ha todos unavailable ({type(e).__name__})", file=sys.stderr)
+    for acct in {s["account"] for s in lists if s.get("source") == "google_tasks"}:
+        try:
+            todos["google_tasks"][acct] = fl.fetch_google_tasks(env, acct)
+        except Exception as e:
+            print(f"  headline: tasks[{acct}] unavailable ({type(e).__name__})",
+                  file=sys.stderr)
+    return gen.items_due_today(todos, today, lists)
+
+
+def write_headline(events: list, due_today: list, kids: list, today: date) -> str:
     """One sentence for the top of the wall. Returns "" if the model is not
-    usable -- the caller then keeps generate_brief's deterministic fallback,
-    because the wall must never go blank over a busy GPU."""
-    lines = [f"- {e}" for e in events] + [f"- {i['title']}" for i in items]
+    usable, or if the day is empty -- the caller then keeps generate_brief's
+    deterministic fallback, because the wall must never go blank over a busy
+    GPU, and an empty day has a reviewed filler line waiting there.
+
+    `due_today` is every OPEN to-do dated today, read back from the live lists.
+    It used to be every item this run pulled out of the mail, including ones
+    the dedupe then skipped -- so a task completed last week could headline the
+    wall, and a deadline that passed in June still read as news.
+    """
+    lines = [f"- {e}" for e in events] + [f"- {t}" for t in due_today]
     if not lines:
         return ""
     who = ", ".join(f'{c["name"]} ({c["grade_label"]})' for c in kids)
@@ -685,7 +717,7 @@ def main(argv=None) -> int:
     if a.headline_out:
         evs = [e["summary"] for e in
                gen.events_for(fl.fetch_calendar(env), today)]
-        h = write_headline(evs, all_kept, kids, today)
+        h = write_headline(evs, todays_todos(fl, gen, env, today), kids, today)
         if h:
             with open(a.headline_out, "w") as f:
                 f.write(h + "\n")
