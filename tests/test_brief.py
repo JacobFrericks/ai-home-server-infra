@@ -14,7 +14,7 @@ import json
 import os
 import sys
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIX = os.path.join(ROOT, "brief", "fixtures")
@@ -457,6 +457,120 @@ class MailCache(unittest.TestCase):
         self._stub(boom=True)
         with self.assertRaises(OSError):
             self.fl.cached_mail({}, 3600)
+
+
+class Horizon(unittest.TestCase):
+    """`max_days_ahead` — a list that only shows this week's business."""
+
+    SPEC = {"source": "ha", "entity": "todo.mine", "owner": "jacob",
+            "name": "Jacob", "panel": True, "max_days_ahead": 7}
+
+    def cols(self, items, spec=None):
+        todos = {"service_response": {"todo.mine": {"items": items}}}
+        return gen.todo_columns(todos, TODAY, [spec or self.SPEC])[0]
+
+    def texts(self, items, spec=None):
+        return [i["text"] for i in self.cols(items, spec)["items"]]
+
+    def test_inside_the_window_is_kept(self):
+        due = (TODAY + timedelta(days=7)).isoformat()
+        self.assertEqual(self.texts([{"summary": "Picture day", "due": due}]),
+                         ["Picture day"])
+
+    def test_one_day_past_the_window_is_hidden(self):
+        due = (TODAY + timedelta(days=8)).isoformat()
+        self.assertEqual(self.texts([{"summary": "Later", "due": due}]), [])
+
+    def test_undated_is_hidden_when_a_horizon_is_set(self):
+        """"The next 7 days" is a claim about when a thing happens, and an
+        undated item makes no such claim."""
+        self.assertEqual(self.texts([{"summary": "Someday", "due": None}]), [])
+
+    def test_undated_is_kept_when_no_horizon_is_set(self):
+        spec = {k: v for k, v in self.SPEC.items() if k != "max_days_ahead"}
+        self.assertEqual(self.texts([{"summary": "Someday", "due": None}], spec),
+                         ["Someday"])
+
+    def test_the_horizon_does_not_resurrect_completed_items(self):
+        due = (TODAY + timedelta(days=1)).isoformat()
+        self.assertEqual(
+            self.texts([{"summary": "Done", "due": due, "status": "completed"}]),
+            [])
+
+    def test_total_counts_only_what_survived(self):
+        near = (TODAY + timedelta(days=2)).isoformat()
+        far = (TODAY + timedelta(days=99)).isoformat()
+        col = self.cols([{"summary": "Soon", "due": near},
+                         {"summary": "Far", "due": far}])
+        self.assertEqual(col["total"], 1)
+
+
+class HeadlineToday(unittest.TestCase):
+    """The headline is a claim about TODAY, so only today may feed it."""
+
+    LISTS = [{"source": "ha", "entity": "todo.mine", "owner": "jacob",
+              "name": "Jacob", "panel": True}]
+
+    def due(self, items):
+        todos = {"service_response": {"todo.mine": {"items": items}}}
+        return gen.items_due_today(todos, TODAY, self.LISTS)
+
+    def test_item_due_today_is_todays_business(self):
+        self.assertEqual(
+            self.due([{"summary": "Pay the deposit", "due": TODAY.isoformat()}]),
+            ["Pay the deposit"])
+
+    def test_completed_today_is_not_todays_business(self):
+        self.assertEqual(self.due([{"summary": "Done", "due": TODAY.isoformat(),
+                                    "status": "completed"}]), [])
+
+    def test_overdue_is_not_today(self):
+        old = (TODAY - timedelta(days=10)).isoformat()
+        self.assertEqual(self.due([{"summary": "Parent meeting", "due": old}]), [])
+
+    def test_undated_is_not_today(self):
+        self.assertEqual(self.due([{"summary": "Someday", "due": None}]), [])
+
+    def test_hidden_lists_do_not_feed_the_headline(self):
+        lists = [dict(self.LISTS[0], panel=False)]
+        todos = {"service_response": {"todo.mine": {"items": [
+            {"summary": "Milk", "due": TODAY.isoformat()}]}}}
+        self.assertEqual(gen.items_due_today(todos, TODAY, lists), [])
+
+
+class Filler(unittest.TestCase):
+    """An empty day still has to say something."""
+
+    def test_empty_day_gets_a_filler(self):
+        self.assertIn(gen._headline([], [], TODAY), gen.FILLERS)
+
+    def test_a_due_item_beats_the_filler(self):
+        self.assertEqual(gen._headline([], ["Pay the deposit"], TODAY),
+                         "Pay the deposit is due today.")
+
+    def test_several_due_items_are_counted(self):
+        self.assertEqual(gen._headline([], ["A", "B"], TODAY),
+                         "2 things due today.")
+
+    def test_events_still_win(self):
+        out = gen._headline([{"summary": "Church", "all_day": True}], [], TODAY)
+        self.assertEqual(out, "Church.")
+
+    def test_the_same_day_always_gets_the_same_line(self):
+        """It is re-rendered every 15 minutes; the wall must not flicker."""
+        self.assertEqual(gen.filler_for(TODAY), gen.filler_for(TODAY))
+
+    def test_consecutive_days_differ(self):
+        self.assertNotEqual(gen.filler_for(TODAY),
+                            gen.filler_for(TODAY + timedelta(days=1)))
+
+    def test_every_filler_fits_the_band(self):
+        for f in gen.FILLERS:
+            self.assertLessEqual(len(f), 90, f)
+            self.assertTrue(f.endswith("."), f)
+
+    def test_fillers_are_unique(self):
+        self.assertEqual(len(set(gen.FILLERS)), len(gen.FILLERS))
 
 
 if __name__ == "__main__":

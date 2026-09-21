@@ -289,8 +289,12 @@ def main(argv=None) -> int:
     doc = gen.build(raw["calendar"], raw["mail"], raw["todos"], date.today(), lists)
 
     # Prefer the model's sentence when there is a fresh one.
+    # Same-day AND fresh. The age limit alone let a sentence written at 23:50
+    # introduce the following morning, naming things that had already happened.
     try:
-        if time.time() - os.path.getmtime(HEADLINE_CACHE) < HEADLINE_MAX_AGE:
+        written = datetime.fromtimestamp(os.path.getmtime(HEADLINE_CACHE))
+        if (written.date() == date.today()
+                and time.time() - written.timestamp() < HEADLINE_MAX_AGE):
             with open(HEADLINE_CACHE) as f:
                 h = f.read().strip()
             if h:

@@ -1,8 +1,9 @@
 {
-  "_comment": "Copy to brief/lists.json (git-ignored) and fill in real names. TWO SOURCES: 'google_tasks' reads a person's own list with a READ-ONLY credential -- the AI cannot write to it, Google refuses; 'ha' reads a Home Assistant todo entity, and the bot's own list is the only one it ever writes. `owner` must match the calendar feed colours in the MagicMirror config and the `owner` values in memory-mcp. `panel: false` keeps a list off the fridge while still letting the AI read it. `max_overdue_days` overrides the 14-day staleness cutoff.",
+  "_comment": "Copy to brief/lists.json (git-ignored) and fill in real names. TWO SOURCES: 'google_tasks' reads a person's own list with a READ-ONLY credential -- the AI cannot write to it, Google refuses; 'ha' reads a Home Assistant todo entity, and the bot's own list is the only one it ever writes. `owner` must match the calendar feed colours in the MagicMirror config and the `owner` values in memory-mcp. `panel: false` keeps a list off the fridge while still letting the AI read it. `max_overdue_days` overrides the 14-day staleness cutoff. `max_days_ahead` hides anything due further out than N days -- and, because 'the next N days' is a claim about when a thing happens, hides UNDATED items on that list too. Omit it to keep everything.",
   "lists": [
     {"source": "google_tasks", "account": "adult-a", "list": "My Tasks",
-     "owner": "adult-a", "name": "Adult A", "auto": false, "panel": true},
+     "owner": "adult-a", "name": "Adult A", "auto": false, "panel": true,
+     "max_days_ahead": 7},
     {"source": "ha", "entity": "todo.family_auto",
      "owner": "family", "name": "Suggested", "auto": true, "panel": true},
     {"source": "ha", "entity": "todo.shopping_list",
