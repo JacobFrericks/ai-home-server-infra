@@ -250,9 +250,26 @@ Module.register("MMM-FamilyBrief", {
     // Left: the date and the brief itself.
     const left = this.el("div", "FB-brief");
     const now = new Date();
-    left.appendChild(this.el("div", "FB-date",
+    const dateRow = this.el("div", "FB-date");
+    dateRow.appendChild(this.el("span", "FB-date-text",
       now.toLocaleDateString("en-US",
         { weekday: "long", month: "long", day: "numeric" })));
+
+    // The day's high and low sit with the DATE, not with the hourly strip:
+    // they describe the whole day, and at 9pm the next five hours contain
+    // neither of them.
+    const today = d.weather && d.weather.today;
+    if (today && (today.high !== null || today.low !== null)) {
+      const hilo = this.el("span", "FB-hilo");
+      if (today.high !== null && today.high !== undefined) {
+        hilo.appendChild(this.el("span", "FB-hi", today.high + "\u00b0"));
+      }
+      if (today.low !== null && today.low !== undefined) {
+        hilo.appendChild(this.el("span", "FB-lo", today.low + "\u00b0"));
+      }
+      dateRow.appendChild(hilo);
+    }
+    left.appendChild(dateRow);
 
     if (d.headline) left.appendChild(this.el("div", "FB-headline", d.headline));
 

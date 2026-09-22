@@ -31,10 +31,25 @@ def strip(payload_, now, count):
     return wx.hours(payload_, now, count, LOCAL)
 
 
-def payload(*hours):
-    """A Home Assistant get_forecasts response carrying these hours."""
+def _response(rows):
+    return {"service_response": {wx.WEATHER_ENTITY: {"forecast": list(rows)}}}
+
+
+def payload(*hours, days=()):
+    """A Home Assistant get_forecasts pair carrying these rows."""
     return {"provider": "homeassistant",
-            "raw": {"service_response": {wx.WEATHER_ENTITY: {"forecast": list(hours)}}}}
+            "raw": {"hourly": _response(hours), "daily": _response(days)}}
+
+
+def day(at, high=72, low=55):
+    """HA dates a daily row at local midday."""
+    row = {"datetime": at.replace(hour=12, minute=0).isoformat(),
+           "condition": "cloudy"}
+    if high is not None:
+        row["temperature"] = high
+    if low is not None:
+        row["templow"] = low
+    return row
 
 
 def hour(at, condition="cloudy", temp=54):
@@ -147,6 +162,20 @@ class ProviderSeam(unittest.TestCase):
         got = strip(payload(hour(NOW + timedelta(hours=1))), NOW, 1)["hours"]
         self.assertEqual(set(got[0]), {"label", "icon", "temp", "precip_pct"})
 
+    def test_today_is_always_a_key_even_when_absent(self):
+        for doc in (wx.hours(None), wx.hours({"provider": "nope", "raw": {}}, NOW),
+                    strip(payload(), NOW, 5)):
+            self.assertIn("today", doc)
+
+    def test_every_provider_is_a_well_formed_triple(self):
+        """fetch() broke on a 3-tuple it used to unpack as a pair. The shape is
+        the contract between here and every future provider, so it is asserted
+        rather than assumed."""
+        for name, entry in wx.PROVIDERS.items():
+            self.assertEqual(len(entry), 3, name)
+            for fn in entry:
+                self.assertTrue(callable(fn), name)
+
     def test_the_provider_is_named_in_the_document(self):
         self.assertEqual(strip(payload(), NOW, 5)["provider"], "homeassistant")
 
@@ -164,6 +193,53 @@ class ProviderSeam(unittest.TestCase):
 
     def test_an_empty_forecast_yields_no_strip(self):
         self.assertEqual(strip(payload(), NOW, 5)["hours"], [])
+
+
+class HighLow(unittest.TestCase):
+    """The day's high and low, which belong to the DAY, not to the next five
+    hours -- at 9pm the hourly window contains neither of them."""
+
+    def today(self, *days, now=NOW):
+        return strip(payload(days=days), now, 5)["today"]
+
+    def test_todays_row_is_used(self):
+        self.assertEqual(self.today(day(NOW, 72, 55)), {"high": 72, "low": 55})
+
+    def test_tomorrows_row_is_not_todays_weather(self):
+        """Past midnight the first row in the list is tomorrow's."""
+        self.assertIsNone(self.today(day(NOW + timedelta(days=1), 80, 60)))
+
+    def test_the_right_day_is_picked_from_several(self):
+        got = self.today(day(NOW - timedelta(days=1), 90, 70),
+                         day(NOW, 72, 55),
+                         day(NOW + timedelta(days=1), 80, 60))
+        self.assertEqual(got, {"high": 72, "low": 55})
+
+    def test_temperatures_are_rounded(self):
+        self.assertEqual(self.today(day(NOW, 71.6, 54.4)),
+                         {"high": 72, "low": 54})
+
+    def test_a_missing_low_keeps_the_high(self):
+        self.assertEqual(self.today(day(NOW, 72, None)),
+                         {"high": 72, "low": None})
+
+    def test_a_row_with_neither_is_none_not_an_empty_pair(self):
+        self.assertIsNone(self.today(day(NOW, None, None)))
+
+    def test_no_daily_forecast_at_all_is_none(self):
+        self.assertIsNone(strip(payload(hour(NOW + timedelta(hours=1))), NOW, 5)["today"])
+
+    def test_an_unparseable_day_is_skipped_not_fatal(self):
+        bad = {"datetime": "whenever", "temperature": 99, "templow": 1}
+        self.assertEqual(self.today(bad, day(NOW, 72, 55)),
+                         {"high": 72, "low": 55})
+
+    def test_a_broken_daily_forecast_does_not_cost_the_hourly_strip(self):
+        doc = strip({"provider": "homeassistant",
+                     "raw": {"hourly": _response([hour(NOW + timedelta(hours=1))]),
+                             "daily": "nonsense"}}, NOW, 5)
+        self.assertEqual(len(doc["hours"]), 1)
+        self.assertIsNone(doc["today"])
 
 
 if __name__ == "__main__":

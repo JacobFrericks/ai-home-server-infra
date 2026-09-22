@@ -70,6 +70,16 @@ def _is_night(dt: datetime) -> bool:
     return dt.hour >= NIGHT_FROM or dt.hour < NIGHT_UNTIL
 
 
+def _forecast(payload: dict, kind: str) -> list:
+    """The forecast rows out of one get_forecasts response, whichever entity
+    answered. Tolerates a bare response as well as the {hourly, daily} pair, so
+    a payload written by the previous version still renders."""
+    doc = (payload or {}).get(kind, payload) or {}
+    resp = doc.get("service_response") or {}
+    entry = resp.get(WEATHER_ENTITY) or next(iter(resp.values()), {})
+    return entry.get("forecast") or []
+
+
 def _label(dt: datetime) -> str:
     """"8 AM", "12 PM" -- no leading zero, as the phone shows it."""
     hour = dt.hour % 12 or 12
@@ -78,9 +88,8 @@ def _label(dt: datetime) -> str:
 
 # --- Home Assistant ----------------------------------------------------------
 
-def _ha_fetch(env: dict) -> dict:
-    """weather.get_forecasts, hourly. The house already owns this."""
-    body = json.dumps({"entity_id": WEATHER_ENTITY, "type": "hourly"}).encode()
+def _ha_call(env: dict, kind: str) -> dict:
+    body = json.dumps({"entity_id": WEATHER_ENTITY, "type": kind}).encode()
     req = urllib.request.Request(
         f"{env['HA_URL']}/api/services/weather/get_forecasts?return_response",
         data=body, method="POST",
@@ -88,6 +97,16 @@ def _ha_fetch(env: dict) -> dict:
                  "Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.load(r)
+
+
+def _ha_fetch(env: dict) -> dict:
+    """Both forecasts the panel needs. The house already owns this.
+
+    Two calls because the day's high and low are a property of the DAY, not of
+    the next few hours: at 9pm the hourly window holds neither, and a strip
+    that says "62 to 60" is not the day anyone wants to dress for.
+    """
+    return {"hourly": _ha_call(env, "hourly"), "daily": _ha_call(env, "daily")}
 
 
 def _ha_hours(payload: dict, now: datetime, count: int, tz=None) -> list:
@@ -99,10 +118,8 @@ def _ha_hours(payload: dict, now: datetime, count: int, tz=None) -> list:
     the generator runs on the same LAN as the fridge. It is a parameter only so
     that a test can pin a zone instead of inheriting the runner's.
     """
-    resp = payload.get("service_response") or {}
-    entry = resp.get(WEATHER_ENTITY) or next(iter(resp.values()), {})
     out = []
-    for f in entry.get("forecast") or []:
+    for f in _forecast(payload, "hourly"):
         try:
             at = datetime.fromisoformat(f["datetime"]).astimezone(tz)
         except (KeyError, TypeError, ValueError):
@@ -127,8 +144,35 @@ def _ha_hours(payload: dict, now: datetime, count: int, tz=None) -> list:
     return out
 
 
+def _ha_today(payload: dict, now: datetime, tz=None) -> dict:
+    """The calendar day's high and low, or None where the provider is silent.
+
+    HA dates each daily entry at local midday, so the day it belongs to is read
+    off the converted timestamp rather than assumed to be the first row -- past
+    midnight the first row is tomorrow.
+    """
+    want = now.astimezone(tz).date()
+    for f in _forecast(payload, "daily"):
+        try:
+            at = datetime.fromisoformat(f["datetime"]).astimezone(tz)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if at.date() != want:
+            continue
+        high, low = f.get("temperature"), f.get("templow")
+        if high is None and low is None:
+            return None
+        return {"high": None if high is None else round(high),
+                "low": None if low is None else round(low)}
+    return None
+
+
+# A provider is this triple, in this order. Indexed by name rather than
+# unpacked, so adding a fourth element later cannot silently break fetch().
+FETCH, HOURS_OF, TODAY_OF = 0, 1, 2
+
 PROVIDERS = {
-    "homeassistant": (_ha_fetch, _ha_hours),
+    "homeassistant": (_ha_fetch, _ha_hours, _ha_today),
 }
 
 
@@ -137,25 +181,29 @@ PROVIDERS = {
 def fetch(env: dict, provider: str = None) -> dict:
     """The raw payload, tagged so hours() knows how to read it."""
     name = provider or PROVIDER
-    get, _ = PROVIDERS[name]
-    return {"provider": name, "raw": get(env)}
+    return {"provider": name, "raw": PROVIDERS[name][FETCH](env)}
 
 
 def hours(payload: dict, now: datetime = None, count: int = HOURS, tz=None) -> dict:
     """The panel's hourly strip. Never raises: a broken or missing forecast
     renders as no strip at all, which is a gap the wall survives."""
     if not payload:
-        return {"provider": None, "hours": []}
+        return {"provider": None, "hours": [], "today": None}
     name = payload.get("provider") or PROVIDER
     pair = PROVIDERS.get(name)
     if not pair:
-        return {"provider": name, "hours": []}
+        return {"provider": name, "hours": [], "today": None}
     now = now or datetime.now().astimezone(tz)
+    raw = payload.get("raw") or {}
     try:
-        got = pair[1](payload.get("raw") or {}, now, count, tz)
+        got = pair[HOURS_OF](raw, now, count, tz)
     except Exception:
         got = []
-    return {"provider": name, "hours": got}
+    try:
+        today = pair[TODAY_OF](raw, now, tz)
+    except Exception:
+        today = None
+    return {"provider": name, "hours": got, "today": today}
 
 
 def main(argv=None) -> int:

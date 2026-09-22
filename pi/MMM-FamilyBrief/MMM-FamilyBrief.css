@@ -310,3 +310,46 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* ---- the day's high and low, on the date line ----
+ *
+ * Beside the date rather than inside the hourly strip: these describe the whole
+ * day, and late in the evening the next five hours hold neither of them.
+ * The high carries the ink, the low is muted -- the same weight relationship
+ * the phone uses, so it reads at a glance from across the kitchen.
+ */
+.FB-date {
+  display: flex;
+  align-items: baseline;
+  gap: .7vw;
+}
+
+.FB-date-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.FB-hilo {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: .35vw;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;          /* the date's tracking is for uppercase words */
+}
+
+.FB-hi { color: #3c4043; font-weight: 500; }
+.FB-lo { color: #9aa0a6; }
+
+/* A thin divider between the two, in place of a slash that would need its own
+   alignment fiddling at this size. */
+.FB-lo::before {
+  content: "";
+  display: inline-block;
+  width: 1px;
+  height: 1.1vh;
+  background: #dadce0;
+  margin-right: .35vw;
+  transform: translateY(.1vh);
+}
