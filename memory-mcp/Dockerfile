@@ -1,7 +1,7 @@
 # memory-mcp — MCP server giving the local AI a persistent, hand-editable
 # markdown memory. No off-the-shelf image fits, so we build a tiny one (matches
 # the DIY comfyui-mcp pattern). Runs streamable-HTTP on loopback 127.0.0.1:9400.
-FROM python:3.14-alpine@sha256:c6ead215bfd31f1e433d968853b7a769989117115b728874824e6c0a27cb96fc
+FROM python:3.14-alpine@sha256:9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01
 
 # ⚠️ WHY ALPINE AND NOT python:3.14-slim, because the diff looks like churn and
 # is not: on 2026-09-13 both images sat at 44 accepted HIGH with NOTHING left to
