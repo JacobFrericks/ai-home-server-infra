@@ -90,19 +90,21 @@ def _ha_fetch(env: dict) -> dict:
         return json.load(r)
 
 
-def _ha_hours(payload: dict, now: datetime, count: int) -> list:
+def _ha_hours(payload: dict, now: datetime, count: int, tz=None) -> list:
     """HA's forecast list -> the panel's hours.
 
-    Times arrive in UTC with an offset, so they are converted to the wall's
-    local zone before anything is labelled: an hour named "8 AM" has to be
-    8 AM in the kitchen, not in Greenwich.
+    Times arrive in UTC with an offset, so they are converted before anything
+    is labelled: an hour named "8 AM" has to be 8 AM in the kitchen, not in
+    Greenwich. `tz` of None means the host's own zone, which is the wall's --
+    the generator runs on the same LAN as the fridge. It is a parameter only so
+    that a test can pin a zone instead of inheriting the runner's.
     """
     resp = payload.get("service_response") or {}
     entry = resp.get(WEATHER_ENTITY) or next(iter(resp.values()), {})
     out = []
     for f in entry.get("forecast") or []:
         try:
-            at = datetime.fromisoformat(f["datetime"]).astimezone()
+            at = datetime.fromisoformat(f["datetime"]).astimezone(tz)
         except (KeyError, TypeError, ValueError):
             continue
         if at < now:
@@ -139,7 +141,7 @@ def fetch(env: dict, provider: str = None) -> dict:
     return {"provider": name, "raw": get(env)}
 
 
-def hours(payload: dict, now: datetime = None, count: int = HOURS) -> dict:
+def hours(payload: dict, now: datetime = None, count: int = HOURS, tz=None) -> dict:
     """The panel's hourly strip. Never raises: a broken or missing forecast
     renders as no strip at all, which is a gap the wall survives."""
     if not payload:
@@ -148,9 +150,9 @@ def hours(payload: dict, now: datetime = None, count: int = HOURS) -> dict:
     pair = PROVIDERS.get(name)
     if not pair:
         return {"provider": name, "hours": []}
-    now = now or datetime.now().astimezone()
+    now = now or datetime.now().astimezone(tz)
     try:
-        got = pair[1](payload.get("raw") or {}, now, count)
+        got = pair[1](payload.get("raw") or {}, now, count, tz)
     except Exception:
         got = []
     return {"provider": name, "hours": got}

@@ -24,6 +24,13 @@ LOCAL = timezone(timedelta(hours=-5))
 NOW = datetime(2026, 9, 22, 7, 30, tzinfo=LOCAL)
 
 
+def strip(payload_, now, count):
+    """hours() with the zone pinned. Without this the assertions depend on the
+    clock of whatever machine runs them: CI is UTC, the fridge is Central, and
+    "is 2am night?" gets a different answer in each."""
+    return wx.hours(payload_, now, count, LOCAL)
+
+
 def payload(*hours):
     """A Home Assistant get_forecasts response carrying these hours."""
     return {"provider": "homeassistant",
@@ -38,32 +45,32 @@ def hour(at, condition="cloudy", temp=54):
 class Strip(unittest.TestCase):
     def test_returns_the_requested_number_of_hours(self):
         hrs = [hour(NOW + timedelta(hours=i)) for i in range(12)]
-        got = wx.hours(payload(*hrs), NOW, 5)
+        got = strip(payload(*hrs), NOW, 5)
         self.assertEqual(len(got["hours"]), 5)
 
     def test_hours_already_past_are_skipped(self):
         hrs = [hour(NOW - timedelta(hours=3)), hour(NOW - timedelta(hours=1)),
                hour(NOW + timedelta(hours=1), temp=61)]
-        got = wx.hours(payload(*hrs), NOW, 5)["hours"]
+        got = strip(payload(*hrs), NOW, 5)["hours"]
         self.assertEqual(len(got), 1)
         self.assertEqual(got[0]["temp"], 61)
 
     def test_a_short_forecast_returns_what_it_has(self):
-        got = wx.hours(payload(hour(NOW + timedelta(hours=1))), NOW, 5)
+        got = strip(payload(hour(NOW + timedelta(hours=1))), NOW, 5)
         self.assertEqual(len(got["hours"]), 1)
 
     def test_temperature_is_rounded_to_a_whole_degree(self):
-        got = wx.hours(payload(hour(NOW + timedelta(hours=1), temp=54.6)), NOW, 5)
+        got = strip(payload(hour(NOW + timedelta(hours=1), temp=54.6)), NOW, 5)
         self.assertEqual(got["hours"][0]["temp"], 55)
 
     def test_a_missing_temperature_is_none_not_zero(self):
         h = hour(NOW + timedelta(hours=1))
         h["temperature"] = None
-        self.assertIsNone(wx.hours(payload(h), NOW, 5)["hours"][0]["temp"])
+        self.assertIsNone(strip(payload(h), NOW, 5)["hours"][0]["temp"])
 
     def test_unparseable_times_are_skipped_not_fatal(self):
         bad = {"datetime": "not a time", "condition": "sunny", "temperature": 50}
-        got = wx.hours(payload(bad, hour(NOW + timedelta(hours=1))), NOW, 5)
+        got = strip(payload(bad, hour(NOW + timedelta(hours=1))), NOW, 5)
         self.assertEqual(len(got["hours"]), 1)
 
 
@@ -83,8 +90,8 @@ class Labels(unittest.TestCase):
     def test_utc_times_are_converted_before_labelling(self):
         """The forecast arrives in UTC. An hour named 8 AM must be 8 AM here."""
         utc = datetime(2026, 9, 22, 18, 0, tzinfo=timezone.utc)
-        got = wx.hours(payload(hour(utc)), utc - timedelta(hours=1), 5)["hours"]
-        self.assertEqual(got[0]["label"], wx._label(utc.astimezone()))
+        got = strip(payload(hour(utc)), utc - timedelta(hours=1), 5)["hours"]
+        self.assertEqual(got[0]["label"], "1 PM")   # 18:00 UTC in UTC-5
 
 
 class Icons(unittest.TestCase):
@@ -92,7 +99,7 @@ class Icons(unittest.TestCase):
 
     def icon(self, condition, at=None):
         at = at or NOW.replace(hour=13)
-        return wx.hours(payload(hour(at, condition)), at - timedelta(minutes=1),
+        return strip(payload(hour(at, condition)), at - timedelta(minutes=1),
                         1)["hours"][0]["icon"]
 
     def test_every_mapped_icon_is_in_the_panel_vocabulary(self):
@@ -112,7 +119,7 @@ class Icons(unittest.TestCase):
 
     def test_a_missing_condition_falls_back(self):
         h = {"datetime": (NOW + timedelta(hours=1)).isoformat(), "temperature": 50}
-        self.assertEqual(wx.hours(payload(h), NOW, 1)["hours"][0]["icon"],
+        self.assertEqual(strip(payload(h), NOW, 1)["hours"][0]["icon"],
                          wx.FALLBACK_ICON)
 
     def test_sun_at_night_becomes_a_moon(self):
@@ -133,15 +140,15 @@ class ProviderSeam(unittest.TestCase):
 
     def test_precip_is_none_when_the_provider_cannot_say(self):
         """Not 0 -- the panel omits the row rather than claiming no rain."""
-        got = wx.hours(payload(hour(NOW + timedelta(hours=1))), NOW, 1)["hours"]
+        got = strip(payload(hour(NOW + timedelta(hours=1))), NOW, 1)["hours"]
         self.assertIsNone(got[0]["precip_pct"])
 
     def test_every_hour_has_the_full_shape(self):
-        got = wx.hours(payload(hour(NOW + timedelta(hours=1))), NOW, 1)["hours"]
+        got = strip(payload(hour(NOW + timedelta(hours=1))), NOW, 1)["hours"]
         self.assertEqual(set(got[0]), {"label", "icon", "temp", "precip_pct"})
 
     def test_the_provider_is_named_in_the_document(self):
-        self.assertEqual(wx.hours(payload(), NOW, 5)["provider"], "homeassistant")
+        self.assertEqual(strip(payload(), NOW, 5)["provider"], "homeassistant")
 
     def test_an_unknown_provider_yields_no_strip_rather_than_raising(self):
         got = wx.hours({"provider": "nope", "raw": {}}, NOW, 5)
@@ -156,7 +163,7 @@ class ProviderSeam(unittest.TestCase):
             [])
 
     def test_an_empty_forecast_yields_no_strip(self):
-        self.assertEqual(wx.hours(payload(), NOW, 5)["hours"], [])
+        self.assertEqual(strip(payload(), NOW, 5)["hours"], [])
 
 
 if __name__ == "__main__":
