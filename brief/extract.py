@@ -576,6 +576,26 @@ def todays_todos(fl, gen, env: dict, today: date) -> list:
     return gen.items_due_today(todos, today, lists)
 
 
+def _grounded(sentence: str, lines: list) -> bool:
+    """Is the sentence about the things it was handed?
+
+    Given one mundane item the model has been seen to ignore it entirely and
+    write about the household line in the prompt instead -- "Focus on Judah's
+    reading and Nora's play today" from an input that said only "Create a
+    Gmail filter". That is the same failure verify_items exists to catch, so it
+    gets the same treatment: share a real word with the input, or be discarded.
+
+    Deliberately generous. One content word in common is enough, because the
+    cost of a false reject is the deterministic sentence, which is correct but
+    plainer -- while the cost of a false accept is a wall that states something
+    nobody has to do.
+    """
+    def words(text):
+        return set(re.findall(r"[a-z][a-z']{3,}", text.lower()))
+    wanted = set().union(*(words(l) for l in lines)) if lines else set()
+    return not wanted or bool(wanted & words(sentence))
+
+
 def write_headline(events: list, due_today: list, kids: list, today: date) -> str:
     """One sentence for the top of the wall. Returns "" if the model is not
     usable, or if the day is empty -- the caller then keeps generate_brief's
@@ -594,9 +614,11 @@ def write_headline(events: list, due_today: list, kids: list, today: date) -> st
     prompt = (
         f"Today is {today.strftime('%A, %B %-d')}. Household: {who}.\n"
         "Write ONE short sentence for a kitchen wall display summarising the "
-        "day. Name what matters and when. Do NOT restate today's date -- the "
-        "display already shows it. No greeting, no emoji, no lead-in, under "
-        "90 characters. Reply with the sentence only.\n\n"
+        "day. Name what matters and when. Use ONLY the list below: do not add "
+        "a theme, an activity or a subject that is not written there, and do "
+        "not name a child unless the list names them. Do NOT restate today's "
+        "date -- the display already shows it. No greeting, no emoji, no "
+        "lead-in, under 90 characters. Reply with the sentence only.\n\n"
         + "\n".join(lines))
     try:
         body = json.dumps({"model": MODEL, "prompt": prompt, "stream": False,
@@ -612,7 +634,12 @@ def write_headline(events: list, due_today: list, kids: list, today: date) -> st
     txt = txt.strip().strip('"').splitlines()[0].strip() if txt else ""
     # A model that ignores "one short sentence" gets overruled rather than
     # allowed to overflow the band.
-    return txt if 0 < len(txt) <= 120 else ""
+    if not (0 < len(txt) <= 120):
+        return ""
+    if not _grounded(txt, lines):
+        print(f"  headline: ungrounded, discarded: {txt!r}", file=sys.stderr)
+        return ""
+    return txt
 
 
 # --- runner ------------------------------------------------------------------

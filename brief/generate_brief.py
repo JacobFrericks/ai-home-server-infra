@@ -50,6 +50,21 @@ import subprocess
 import sys
 from datetime import date, datetime, timedelta
 
+
+def _sibling(name: str, filename: str):
+    """Load a neighbour in brief/ by path. These files run as scripts from a
+    systemd unit, not as an installed package, so a plain import would depend
+    on the caller's working directory."""
+    import importlib.util
+    sp = importlib.util.spec_from_file_location(
+        name, os.path.join(os.path.dirname(os.path.abspath(__file__)), filename))
+    mod = importlib.util.module_from_spec(sp)
+    sp.loader.exec_module(mod)
+    return mod
+
+
+weather = _sibling("weather", "weather.py")
+
 # The panel caps: 3 brief lines, 4 items per column. Measured against the real
 # 1920x1080 wall, not chosen by taste -- see MMM-FamilyBrief.css. Emitting more
 # than this is not an error, the panel just hides the overflow behind "+N more",
@@ -593,7 +608,7 @@ def todo_columns(todos: dict, today: date, lists: list[dict] = None) -> list[dic
 # --- assembly ----------------------------------------------------------------
 
 def build(events: dict, mail: dict, todos: dict, today: date,
-          lists: list[dict] = None) -> dict:
+          lists: list[dict] = None, weather_raw: dict = None) -> dict:
     todays = events_for(events, today)
 
     lines = []
@@ -612,6 +627,10 @@ def build(events: dict, mail: dict, todos: dict, today: date,
         "headline": headline,
         "lines": lines,
         "todos": todo_columns(todos, today, lists),
+        # The next few hours, from whichever provider brief/weather.py is
+        # pointed at. An empty list is a legitimate answer -- the panel simply
+        # renders no strip -- so a dead forecast never costs the wall its brief.
+        "weather": weather.hours(weather_raw),
         # Not rendered by the panel today. Carried so the mail path is exercised
         # end to end, and so a later "what did the bot read?" view has it.
         "mail": mail_summaries(mail),
