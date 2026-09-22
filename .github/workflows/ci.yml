@@ -70,6 +70,12 @@ jobs:
           python3 tests/test_extract.py
           python3 tests/test_mail_idle.py
 
+      - name: Unit tests — the weather strip
+        # The provider seam: a forecast source can be swapped without touching
+        # the Pi, but only while every provider keeps producing the same icon
+        # vocabulary and the same per-hour shape. That is what these assert.
+        run: python3 tests/test_weather.py
+
       - name: Bandit — warn-only
         # ~8k LOC of glue and MCP servers taking LLM-supplied input (memory-mcp,
         # comfyui-mcp, scripts/, the HA custom_components except the vendored

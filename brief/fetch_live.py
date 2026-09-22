@@ -232,6 +232,7 @@ def main(argv=None) -> int:
         "gen", os.path.join(HERE, "generate_brief.py"))
     gen = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gen)
+    wx = gen.weather
 
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -250,7 +251,8 @@ def main(argv=None) -> int:
     # IMAP connection must not cost the wall its calendar. The panel keeps its
     # last good payload anyway, but partial fresh data beats none.
     raw = {"calendar": {"items": []}, "mail": {"messages": []},
-           "todos": {"service_response": {}, "google_tasks": {}}}
+           "todos": {"service_response": {}, "google_tasks": {}},
+           "weather": None}
     errs = []
 
     try:
@@ -281,6 +283,13 @@ def main(argv=None) -> int:
         except Exception as e:
             errs.append(f"tasks[{acct}]: {type(e).__name__}")
 
+    try:
+        raw["weather"] = wx.fetch(env)
+        got = len((wx.hours(raw["weather"]) or {}).get("hours", []))
+        print(f"weather  : {got} hour(s) [{raw['weather']['provider']}]", file=sys.stderr)
+    except Exception as e:
+        errs.append(f"weather: {type(e).__name__}")
+
     for e in errs:
         print(f"WARN {e}", file=sys.stderr)
 
@@ -290,7 +299,8 @@ def main(argv=None) -> int:
         print(f"wrote {a.dump_raw}", file=sys.stderr)
         return 0
 
-    doc = gen.build(raw["calendar"], raw["mail"], raw["todos"], date.today(), lists)
+    doc = gen.build(raw["calendar"], raw["mail"], raw["todos"], date.today(),
+                    lists, raw.get("weather"))
 
     # Prefer the model's sentence when there is a fresh one.
     # Same-day AND fresh. The age limit alone let a sentence written at 23:50

@@ -368,5 +368,41 @@ class Note(unittest.TestCase):
         self.assertIsInstance(ex.build_note({}, {}), str)
 
 
+class Grounded(unittest.TestCase):
+    """The wall's sentence has to be about the day it was handed.
+
+    Seen live 2026-09-21: given the single item "Create a Gmail filter so my
+    forwards skip Spam", the model wrote "Focus on Judah's reading and Nora's
+    play today" -- it had reached past the items for the household line in the
+    prompt. Nothing on the wall was true.
+    """
+
+    LINES = ["- Create a Gmail filter so my forwards skip Spam"]
+
+    def test_a_sentence_sharing_a_word_is_kept(self):
+        self.assertTrue(ex._grounded("Create the Gmail filter today.", self.LINES))
+
+    def test_the_real_hallucination_is_rejected(self):
+        self.assertFalse(
+            ex._grounded("Focus on Judah's reading and Nora's play today.",
+                         self.LINES))
+
+    def test_short_words_do_not_count_as_agreement(self):
+        """"the", "my", "so" are in every sentence ever written."""
+        self.assertFalse(ex._grounded("So this is the my one.", self.LINES))
+
+    def test_case_and_punctuation_are_ignored(self):
+        self.assertTrue(ex._grounded("GMAIL, sorted.", self.LINES))
+
+    def test_nothing_to_be_grounded_against_accepts(self):
+        """With no input lines write_headline returns early anyway; this just
+        makes the helper safe to call."""
+        self.assertTrue(ex._grounded("Anything at all.", []))
+
+    def test_one_word_in_common_is_enough(self):
+        lines = ["- Church at 10:30", "- Buy milk"]
+        self.assertTrue(ex._grounded("Church this morning, then errands.", lines))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
